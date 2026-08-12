@@ -3,11 +3,11 @@ import { SafeAreaView, ScrollView, Text, View } from "react-native";
 import {
   BrandMark,
   HomeBannerCard,
-  HomeDictationCard,
   HomePagerDots,
   SoftTouchableOpacity,
   styles,
 } from "../App";
+import DictationPanel from "../components/DictationPanel";
 
 export default function HomeScreen({ onOpenDrawer }) {
   return (
@@ -36,7 +36,7 @@ export default function HomeScreen({ onOpenDrawer }) {
 
           <HomeBannerCard />
           <HomePagerDots />
-          <HomeDictationCard />
+          <DictationPanel />
         </ScrollView>
       </View>
     </SafeAreaView>
