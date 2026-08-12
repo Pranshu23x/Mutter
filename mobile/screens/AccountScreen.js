@@ -56,7 +56,7 @@ export default function AccountScreen({ onBack }) {
         <View style={styles.accountOptionCard}>
           <AccountOptionRow label="View privacy policy" />
           <View style={styles.accountDivider} />
-          <AccountOptionRow label="How to use Wispr Flow Android" />
+          <AccountOptionRow label="How to use Mutter Android" />
         </View>
 
         <SoftTouchableOpacity style={styles.accountSignOutCard}>

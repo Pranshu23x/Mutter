@@ -33,7 +33,7 @@ export default function StyleScreen({ onOpenDrawer }) {
 
             <View style={styles.brandWrap}>
               <BrandMark />
-              <Text style={styles.brandText}>Wispr Flow</Text>
+              <Text style={styles.brandText}>Mutter</Text>
             </View>
           </View>
 

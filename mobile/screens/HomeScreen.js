@@ -28,7 +28,7 @@ export default function HomeScreen({ onOpenDrawer }) {
 
             <View style={styles.homeBrandWrap}>
               <BrandMark />
-              <Text style={styles.brandText}>Wispr Flow</Text>
+              <Text style={styles.brandText}>Mutter</Text>
             </View>
 
             <View style={styles.homeTopSpacer} />

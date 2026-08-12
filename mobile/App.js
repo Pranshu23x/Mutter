@@ -534,9 +534,9 @@ function DrawerAccountGlyph() {
 export function HomeBannerCard() {
   return (
     <View style={styles.homeBannerCard}>
-      <Text style={styles.homeBannerTitle}>Keep Wispr Flow running</Text>
+      <Text style={styles.homeBannerTitle}>Keep Mutter running</Text>
       <Text style={styles.homeBannerBody}>
-        This helps Wispr Flow stay ready when you need it. You can change this anytime.
+        This helps Mutter stay ready when you need it. You can change this anytime.
       </Text>
       <SoftTouchableOpacity style={styles.homeBannerButton}>
         <Text style={styles.homeBannerButtonText}>Allow</Text>
