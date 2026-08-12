@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>VoxTranslate Test</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'Segoe UI', sans-serif; background: #0a0a0a; color: #fff; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+    .card { background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 16px; padding: 32px; width: 420px; max-width: 95vw; }
+    h1 { font-size: 1.3rem; margin-bottom: 8px; }
+    .subtitle { color: #666; font-size: 0.8rem; margin-bottom: 24px; }
+
+    /* Auth */
+    .auth { margin-bottom: 20px; padding-bottom: 20px; border-bottom: 1px solid #2a2a2a; }
+    .auth-row { display: flex; gap: 8px; margin-bottom: 8px; }
+    .auth-row input { flex: 1; padding: 8px 12px; background: #0a0a0a; border: 1px solid #2a2a2a; border-radius: 8px; color: #fff; font-size: 0.8rem; }
+    .auth-row input:focus { outline: none; border-color: #0af; }
+    .auth-btns { display: flex; gap: 8px; }
+    .btn-sm { padding: 6px 14px; border: none; border-radius: 8px; font-size: 0.75rem; cursor: pointer; font-weight: 600; }
+    .btn-login { background: #0af; color: #000; }
+    .btn-signup { background: #333; color: #fff; }
+    .auth-status { font-size: 0.7rem; margin-top: 6px; color: #888; }
+    .auth-status.ok { color: #0f0; }
+    .auth-status.err { color: #f44; }
+
+    /* Persona */
+    .persona-section { margin-bottom: 20px; }
+    .persona-section label { font-size: 0.75rem; color: #666; display: block; margin-bottom: 8px; }
+    .personas { display: flex; gap: 8px; flex-wrap: wrap; }
+    .persona-btn { padding: 8px 16px; border: 1px solid #2a2a2a; border-radius: 20px; background: transparent; color: #888; font-size: 0.8rem; cursor: pointer; transition: all 0.2s; }
+    .persona-btn.active { border-color: #0af; color: #0af; background: rgba(0,170,255,0.1); }
+    .persona-btn:hover { border-color: #555; color: #ccc; }
+
+    /* Record */
+    .record-section { text-align: center; margin: 24px 0; }
+    .record-btn { width: 80px; height: 80px; border-radius: 50%; border: 3px solid #333; background: #1a1a1a; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; transition: all 0.2s; position: relative; }
+    .record-btn:hover { border-color: #555; }
+    .record-btn.recording { border-color: #f44; background: rgba(255,68,68,0.1); animation: pulse 1s infinite; }
+    .record-btn .dot { width: 24px; height: 24px; background: #f44; border-radius: 50%; transition: all 0.2s; }
+    .record-btn.recording .dot { width: 20px; height: 20px; border-radius: 4px; }
+    .record-label { font-size: 0.75rem; color: #555; margin-top: 10px; }
+    .record-label.recording { color: #f44; }
+    .timer { font-size: 0.7rem; color: #444; margin-top: 4px; font-variant-numeric: tabular-nums; }
+
+    @keyframes pulse {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(255,68,68,0.4); }
+      50% { box-shadow: 0 0 0 12px rgba(255,68,68,0); }
+    }
+
+    /* Result */
+    .result { background: #0a0a0a; border: 1px solid #2a2a2a; border-radius: 12px; padding: 16px; min-height: 80px; }
+    .result-label { font-size: 0.7rem; color: #555; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.05em; }
+    .result-text { font-size: 0.9rem; line-height: 1.6; color: #ccc; }
+    .result-text.empty { color: #444; font-style: italic; }
+    .result-meta { margin-top: 10px; padding-top: 10px; border-top: 1px solid #2a2a2a; font-size: 0.7rem; color: #555; display: flex; gap: 16px; }
+
+    .loading { color: #0af; font-size: 0.8rem; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>VoxTranslate</h1>
+    <p class="subtitle">Hold the button, speak, release to translate</p>
+
+    <!-- Auth -->
+    <div class="auth">
+      <div class="auth-row">
+        <input type="email" id="email" placeholder="Email">
+        <input type="password" id="password" placeholder="Password">
+      </div>
+      <div class="auth-btns">
+        <button class="btn-sm btn-login" onclick="login()">Login</button>
+        <button class="btn-sm btn-signup" onclick="signup()">Signup</button>
+      </div>
+      <div class="auth-status" id="authStatus"></div>
+    </div>
+
+    <!-- Persona -->
+    <div class="persona-section">
+      <label>Mode</label>
+      <div class="personas">
+        <button class="persona-btn active" data-persona="Work" onclick="selectPersona(this)">Work</button>
+        <button class="persona-btn" data-persona="Email" onclick="selectPersona(this)">Email</button>
+        <button class="persona-btn" data-persona="Personal" onclick="selectPersona(this)">Personal</button>
+        <button class="persona-btn" data-persona="Other" onclick="selectPersona(this)">Other</button>
+      </div>
+    </div>
+
+    <!-- Record -->
+    <div class="record-section">
+      <button class="record-btn" id="recordBtn" onmousedown="startRecord()" onmouseup="stopRecord()" onmouseleave="stopRecord()" ontouchstart="startRecord()" ontouchend="stopRecord()">
+        <div class="dot"></div>
+      </button>
+      <div class="record-label" id="recordLabel">Hold to speak</div>
+      <div class="timer" id="timer"></div>
+    </div>
+
+    <!-- Result -->
+    <div class="result">
+      <div class="result-label">Result</div>
+      <div class="result-text empty" id="resultText">Speak something to see the translation...</div>
+      <div class="result-meta" id="resultMeta" style="display:none;">
+        <span id="metaWords"></span>
+        <span id="metaPersona"></span>
+        <span id="metaTotal"></span>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const API = 'http://localhost:3000';
+    let token = '';
+    let selectedPersona = 'Work';
+    let mediaRecorder = null;
+    let audioChunks = [];
+    let timerInterval = null;
+    let startTime = 0;
+
+    // Auth
+    async function signup() {
+      const email = document.getElementById('email').value;
+      const password = document.getElementById('password').value;
+      try {
+        const res = await fetch(`${API}/api/auth/signup`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password })
+        });
+        const data = await res.json();
+        setStatus(res.ok ? 'Signed up! Now login.' : data.error, res.ok);
+      } catch (e) { setStatus('Server not running', false); }
+    }
+
+    async function login() {
+      const email = document.getElementById('email').value;
+      const password = document.getElementById('password').value;
+      try {
+        const res = await fetch(`${API}/api/auth/login`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password })
+        });
+        const data = await res.json();
+        if (res.ok && data.session?.access_token) {
+          token = data.session.access_token;
+          setStatus('Logged in!', true);
+        } else {
+          setStatus(data.error || 'Login failed', false);
+        }
+      } catch (e) { setStatus('Server not running', false); }
+    }
+
+    function setStatus(msg, ok) {
+      const el = document.getElementById('authStatus');
+      el.textContent = msg;
+      el.className = 'auth-status ' + (ok ? 'ok' : 'err');
+    }
+
+    // Persona
+    function selectPersona(btn) {
+      document.querySelectorAll('.persona-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      selectedPersona = btn.dataset.persona;
+    }
+
+    // Recording
+    async function startRecord() {
+      if (!token) { setStatus('Login first!', false); return; }
+
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        audioChunks = [];
+        mediaRecorder = new MediaRecorder(stream);
+
+        mediaRecorder.ondataavailable = (e) => {
+          if (e.data.size > 0) audioChunks.push(e.data);
+        };
+
+        mediaRecorder.onstop = async () => {
+          stream.getTracks().forEach(t => t.stop());
+          const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+          await sendAudio(audioBlob);
+        };
+
+        mediaRecorder.start();
+
+        document.getElementById('recordBtn').classList.add('recording');
+        document.getElementById('recordLabel').textContent = 'Recording... release to send';
+        document.getElementById('recordLabel').classList.add('recording');
+
+        startTime = Date.now();
+        timerInterval = setInterval(updateTimer, 100);
+      } catch (e) {
+        setStatus('Microphone access denied', false);
+      }
+    }
+
+    function stopRecord() {
+      if (!mediaRecorder || mediaRecorder.state === 'inactive') return;
+      mediaRecorder.stop();
+      clearInterval(timerInterval);
+
+      document.getElementById('recordBtn').classList.remove('recording');
+      document.getElementById('recordLabel').textContent = 'Hold to speak';
+      document.getElementById('recordLabel').classList.remove('recording');
+      document.getElementById('timer').textContent = '';
+    }
+
+    function updateTimer() {
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+      document.getElementById('timer').textContent = elapsed + 's';
+    }
+
+    // Send audio
+    async function sendAudio(blob) {
+      const resultEl = document.getElementById('resultText');
+      const metaEl = document.getElementById('resultMeta');
+      resultEl.textContent = 'Translating...';
+      resultEl.className = 'result-text loading';
+      metaEl.style.display = 'none';
+
+      const formData = new FormData();
+      formData.append('file', blob, 'recording.webm');
+      formData.append('persona', selectedPersona);
+
+      try {
+        const res = await fetch(`${API}/api/speech-to-text-translate`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}` },
+          body: formData
+        });
+        const data = await res.json();
+
+        if (res.ok) {
+          resultEl.textContent = data.parsedOutput;
+          resultEl.className = 'result-text';
+          metaEl.style.display = 'flex';
+          document.getElementById('metaWords').textContent = data.wordsSpoken + ' words';
+          document.getElementById('metaPersona').textContent = data.persona;
+          document.getElementById('metaTotal').textContent = data.wordsUsedToday + '/1000 used today';
+        } else {
+          resultEl.textContent = data.error || 'Translation failed';
+          resultEl.className = 'result-text empty';
+        }
+      } catch (e) {
+        resultEl.textContent = 'Server not running';
+        resultEl.className = 'result-text empty';
+      }
+    }
+  </script>
+</body>
+</html>

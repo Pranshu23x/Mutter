@@ -1,0 +1,27 @@
+{
+  "name": "app",
+  "version": "1.0.0",
+  "description": "",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "dev": "nodemon server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@arcjet/inspect": "^1.5.0",
+    "@arcjet/node": "^1.5.0",
+    "@supabase/supabase-js": "^2.110.9",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "groq-sdk": "^1.4.0",
+    "multer": "^2.2.0",
+    "nodemon": "^3.1.14",
+    "razorpay": "^2.9.8",
+    "sarvamai": "^1.1.7",
+    "ws": "^8.21.1"
+  }
+}

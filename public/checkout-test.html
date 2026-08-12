@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Rewine — Checkout Test</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'Segoe UI', sans-serif; background: #0a0a0a; color: #fff; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+    .card { background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 16px; padding: 32px; width: 440px; max-width: 95vw; }
+    h1 { font-size: 1.3rem; margin-bottom: 8px; }
+    .subtitle { color: #666; font-size: 0.8rem; margin-bottom: 24px; }
+
+    .section { margin-bottom: 20px; padding-bottom: 20px; border-bottom: 1px solid #2a2a2a; }
+    .auth-row { display: flex; gap: 8px; margin-bottom: 8px; }
+    .auth-row input { flex: 1; padding: 8px 12px; background: #0a0a0a; border: 1px solid #2a2a2a; border-radius: 8px; color: #fff; font-size: 0.8rem; }
+    .auth-row input:focus { outline: none; border-color: #0af; }
+    .auth-btns { display: flex; gap: 8px; }
+    .btn { flex: 1; padding: 10px 14px; border: none; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 0.85rem; }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-primary { background: #0af; color: #000; }
+    .btn-ghost { background: #333; color: #fff; }
+    .status { font-size: 0.75rem; margin-top: 8px; color: #888; }
+    .status.ok { color: #0f0; }
+    .status.err { color: #f44; }
+    .status.info { color: #0af; }
+
+    .plans { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 14px; }
+    .plan { padding: 14px; border: 1px solid #2a2a2a; border-radius: 10px; cursor: pointer; text-align: center; transition: all 0.2s; }
+    .plan.active { border-color: #0af; background: rgba(0,170,255,0.08); }
+    .plan .name { font-size: 0.8rem; color: #ccc; margin-bottom: 4px; }
+    .plan .price { font-size: 1.15rem; font-weight: 700; }
+    .plan .period { font-size: 0.7rem; color: #666; }
+
+    .current { background: #0a0a0a; border: 1px solid #2a2a2a; border-radius: 10px; padding: 12px 14px; font-size: 0.8rem; }
+    .current b { color: #0af; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Rewine — Checkout Test</h1>
+    <p class="subtitle">Login (or signup) → pick a plan → pay with the test card</p>
+
+    <div class="section auth">
+      <div class="auth-row">
+        <input type="email" id="email" placeholder="Email" autocomplete="email">
+        <input type="password" id="password" placeholder="Password" autocomplete="current-password">
+      </div>
+      <div class="auth-btns">
+        <button class="btn btn-primary" id="loginBtn" onclick="login()">Login</button>
+        <button class="btn btn-ghost" id="signupBtn" onclick="signup()">Signup</button>
+      </div>
+      <div class="status" id="authStatus">Not logged in</div>
+    </div>
+
+    <div class="section">
+      <div class="plans">
+        <div class="plan active" data-cycle="monthly" onclick="selectPlan(this)">
+          <div class="name">Pro Monthly</div>
+          <div class="price">₹299</div>
+          <div class="period">per month</div>
+        </div>
+        <div class="plan" data-cycle="yearly" onclick="selectPlan(this)">
+          <div class="name">Pro Yearly</div>
+          <div class="price">₹2,999</div>
+          <div class="period">per year</div>
+        </div>
+      </div>
+      <button class="btn btn-primary" id="subscribeBtn" onclick="subscribe()" disabled>Subscribe</button>
+      <div class="status" id="payStatus"></div>
+    </div>
+
+    <div class="section" style="border-bottom: none; margin-bottom: 0; padding-bottom: 0;">
+      <div style="display: flex; gap: 8px; margin-bottom: 10px;">
+        <button class="btn btn-ghost" onclick="checkPlan()">Check my plan</button>
+      </div>
+      <div class="status ok" id="planStatus"></div>
+      <div class="current" id="planBox" style="display:none;"></div>
+    </div>
+  </div>
+
+  <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+  <script>
+    let token = '';
+    let selectedCycle = 'monthly';
+
+    function setStatus(elId, msg, type) {
+      const el = document.getElementById(elId);
+      el.textContent = msg;
+      el.className = 'status ' + (type || '');
+    }
+
+    async function signup() {
+      const email = document.getElementById('email').value.trim();
+      const password = document.getElementById('password').value;
+      if (!email || !password) return setStatus('authStatus', 'Enter email and password', 'err');
+      try {
+        const res = await fetch('/api/auth/signup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          setStatus('authStatus', 'Account created — now log in', 'ok');
+          await login(email, password);
+        } else setStatus('authStatus', data.error || 'Signup failed', 'err');
+      } catch (e) { setStatus('authStatus', 'Server not reachable', 'err'); }
+    }
+
+    async function login(emailOverride, passwordOverride) {
+      const email = emailOverride || document.getElementById('email').value.trim();
+      const password = passwordOverride || document.getElementById('password').value;
+      if (!email || !password) return setStatus('authStatus', 'Enter email and password', 'err');
+      try {
+        const res = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password })
+        });
+        const data = await res.json();
+        if (res.ok && data.session?.access_token) {
+          token = data.session.access_token;
+          setStatus('authStatus', 'Logged in!', 'ok');
+          document.getElementById('subscribeBtn').disabled = false;
+          checkPlan();
+        } else setStatus('authStatus', data.error || 'Login failed', 'err');
+      } catch (e) { setStatus('authStatus', 'Server not reachable', 'err'); }
+    }
+
+    function selectPlan(el) {
+      document.querySelectorAll('.plan').forEach(p => p.classList.remove('active'));
+      el.classList.add('active');
+      selectedCycle = el.dataset.cycle;
+    }
+
+    async function subscribe() {
+      if (!token) return setStatus('payStatus', 'Login first', 'err');
+      setStatus('payStatus', 'Creating subscription...', 'info');
+      try {
+        const res = await fetch('/api/payments/create-subs', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer ' + token
+          },
+          body: JSON.stringify({ billing_cycle: selectedCycle })
+        });
+        const data = await res.json();
+        if (!res.ok) return setStatus('payStatus', data.error || data.message || 'Failed', 'err');
+
+        setStatus('payStatus', 'Opening Razorpay Checkout...', 'info');
+        const options = {
+          key: data.razorpay_key_id,
+          subscription_id: data.subscription_id,
+          name: 'Rewine — Pro ' + selectedCycle,
+          description: 'Pro ' + (selectedCycle === 'monthly' ? 'Monthly ₹299' : 'Yearly ₹2,999'),
+          prefill: { email: document.getElementById('email').value.trim() },
+          theme: { color: '#0af' },
+          modal: {
+            ondismiss: () => setStatus('payStatus', 'Checkout closed — subscription created but unpaid', 'err')
+          },
+          handler: (response) => {
+            setStatus('payStatus', 'Payment done! Polling plan status...', 'ok');
+            pollPlan();
+          }
+        };
+        const rzp = new Razorpay(options);
+        rzp.open();
+      } catch (e) {
+        setStatus('payStatus', 'Server not reachable', 'err');
+      }
+    }
+
+    async function checkPlan() {
+      if (!token) { setStatus('planStatus', 'Login first', 'err'); return; }
+      const res = await fetch('/api/payments/subs', { headers: { 'Authorization': 'Bearer ' + token } });
+      const data = await res.json();
+      const box = document.getElementById('planBox');
+      box.style.display = 'block';
+      box.innerHTML = 'Plan: <b>' + (data.plan || 'free') + '</b> &nbsp;|&nbsp; Status: <b>' + (data.status || 'none') + '</b>' +
+        (data.current_period_end ? ' &nbsp;|&nbsp; Renews: <b>' + new Date(data.current_period_end).toLocaleDateString() + '</b>' : '');
+      setStatus('planStatus', res.ok ? '' : 'Failed to load');
+    }
+
+    function pollPlan(attempts = 10) {
+      const interval = setInterval(async () => {
+        const res = await fetch('/api/payments/subs', { headers: { 'Authorization': 'Bearer ' + token } });
+        const data = await res.json();
+        if (data.status === 'active' && data.plan === 'pro') {
+          clearInterval(interval);
+          setStatus('payStatus', 'SUCCESS — Pro activated via webhook!', 'ok');
+          checkPlan();
+        } else if (attempts-- <= 0) {
+          clearInterval(interval);
+          setStatus('payStatus', 'Payment done, but webhook not seen yet. Check Razorpay webhook logs.', 'err');
+        }
+      }, 3000);
+    }
+  </script>
+</body>
+</html>
