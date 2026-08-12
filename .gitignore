@@ -1,2 +1,11 @@
 node_modules/
 .env
+
+# logs
+*.log
+server_err.log
+
+# test/scratch files (test.js contained a hardcoded secret key)
+test.js
+test.wav
+token.txt
