@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import {
+  ActivityIndicator,
   Animated,
   Dimensions,
   Easing,
@@ -24,6 +25,8 @@ import HomeRoute from "./screens/HomeScreen";
 import StyleRoute from "./screens/StyleScreen";
 import SettingsRoute from "./screens/SettingsScreen";
 import AccountRoute from "./screens/AccountScreen";
+import AuthScreen from "./screens/AuthScreen";
+import { AuthProvider, useAuth } from "./auth/AuthContext";
 
 export const SCREEN_WIDTH = Dimensions.get("window").width;
 export const DRAWER_WIDTH = Math.min(336, Math.round(SCREEN_WIDTH * 0.84));
@@ -121,8 +124,39 @@ function MainTabs({ onOpenDrawer }) {
 }
 
 export default function App() {
+  return (
+    <AuthProvider>
+      <AppShell />
+    </AuthProvider>
+  );
+}
+
+function AppShell() {
+  const { token, loading } = useAuth();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const bubble = useFloatingBubbleController();
+
+  if (loading) {
+    return (
+      <GestureHandlerRootView style={{ flex: 1 }}>
+        <SafeAreaProvider>
+          <View style={{ flex: 1, backgroundColor: "#f9f9f9", alignItems: "center", justifyContent: "center" }}>
+            <ActivityIndicator size="large" color="#111111" />
+          </View>
+        </SafeAreaProvider>
+      </GestureHandlerRootView>
+    );
+  }
+
+  if (!token) {
+    return (
+      <GestureHandlerRootView style={{ flex: 1 }}>
+        <SafeAreaProvider>
+          <AuthScreen />
+        </SafeAreaProvider>
+      </GestureHandlerRootView>
+    );
+  }
 
   const openDrawer = () => setDrawerOpen(true);
   const closeDrawer = () => setDrawerOpen(false);
