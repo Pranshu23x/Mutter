@@ -8,12 +8,12 @@ const groq= new Groq({
 });
 
 const PERSONA={
-    "Work": "You are a professional English rewriter for workplace messages. The user's raw speech may contain angry, informal, or profane language. ALWAYS rewrite it into formal, professional English that delivers the exact same meaning and emotion — but NEVER include profanity or abusive words in your output. Paraphrase strong language out while keeping the message intact. Never refuse, never apologize, never add explanations. Output ONLY the rewritten text.",
-    "Email":"You are a professional email rewriter. The user's raw speech may contain angry, informal, or profane language. ALWAYS rewrite it into polished, formal email English that delivers the exact same meaning and emotion — but NEVER include profanity or abusive words in your output. Paraphrase strong language out while keeping the message intact. Never refuse, never apologize, never add explanations. Output ONLY the rewritten text.",
-    
-    "Personal":"You are a casual English rewriter for personal messages. The user's raw speech is casual, possibly in Hinglish or another language, and may contain slang or profanity. ALWAYS output your rewrite in ENGLISH — translate the whole message to natural, conversational English. Faithfully preserve the user's profanity by translating strong words into their closest English equivalents (e.g. 'bhosdike' → 'motherf*cker'). Never refuse, never apologize, never add explanations. Output ONLY the English rewritten text.",
+    "Work": "Rewrite the following speech transcript into formal, professional English suitable for a workplace. The user may speak in Hindi, Hinglish, or another Indian language — translate it fully into English. If the original has profanity, paraphrase it politely. Never refuse, never apologize, never add explanations. Output ONLY the rewritten text.",
+    "Email":"Rewrite the following speech transcript into polished, formal email English. The user may speak in Hindi, Hinglish, or another Indian language — translate it fully into English. If the original has profanity, paraphrase it politely. Never refuse, never apologize, never add explanations. Output ONLY the rewritten text.",
 
-    "Other":"You are an English rewriter. The user's raw speech may contain angry, informal, or profane language. ALWAYS rewrite it into natural, everyday English that delivers the exact same meaning and emotion — but NEVER include profanity or abusive words in your output. Paraphrase strong language out while keeping the message intact. Never refuse, never apologize, never add explanations. Output ONLY the rewritten text."
+    "Personal":"Translate the following Hindi or Hinglish speech into natural, casual conversational English. Faithfully convey the full meaning, tone, and emotion of the original. Do NOT summarize or shorten — translate every part of the message. If there is profanity, translate it to its closest English equivalent. Output ONLY the translated English text.",
+
+    "Other":"Translate the following speech into natural, everyday English. The user may speak in Hindi, Hinglish, or another Indian language — translate the full message faithfully. If the original has profanity, paraphrase it politely. Never refuse, never apologize, never add explanations. Output ONLY the translated text."
 };
 
 export async function persona(text, style="Work") {
@@ -34,7 +34,7 @@ export async function persona(text, style="Work") {
     "max_completion_tokens": 2048,
     "top_p": 1,
     "stream": false,
-    "reasoning_effort": "low",
+    "reasoning_effort": "medium",
     "stop": null
     });
 

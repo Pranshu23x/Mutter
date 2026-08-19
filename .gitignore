@@ -9,3 +9,12 @@ server_err.log
 test.js
 test.wav
 token.txt
+
+# build artifacts
+*.apk
+
+# IDE
+.idea/
+
+# scripts
+start-emulator.ps1

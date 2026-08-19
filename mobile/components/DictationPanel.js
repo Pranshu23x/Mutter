@@ -1,253 +1,225 @@
-import { useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import {
+  PermissionsAndroid,
+  Platform,
+  ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from "react-native";
-import { Audio } from "expo-av";
-import { API_BASE_URL } from "../api.config";
-import { useAuth } from "../auth/AuthContext";
 
-const PERSONAS = ["Work", "Email", "Personal", "Other"];
-const LIMIT_WORDS = 5000; // placeholder until a /api/payments/limits endpoint exists
+const EXAMPLES = [
+  {
+    category: "Personal",
+    input: "ଆଜି थोड़ा देर ହେବ, traffic बहुत ज्यादा ଅଛି।",
+    output: "I’ll be a little late today, the traffic is really heavy.",
+  },
+  {
+    category: "Personal",
+    input: "আজকে আমার একটু late হবে, তুমি কি wait করতে পারবে?",
+    output: "I’ll be a little late today. Could you wait for me?",
+  },
+  {
+    category: "Work",
+    input: "कल का report ready है, but एक बार check कर लेना please।",
+    output: "The report for tomorrow is ready. Please review it once.",
+  },
+  {
+    category: "Work",
+    input: "இன்னைக்கு meeting கொஞ்சம் long ஆகிடுச்சு, I’ll call you in ten minutes.",
+    output: "The meeting ran long. I’ll call you in ten minutes.",
+  },
+  {
+    category: "Email",
+    input: "मला उद्या थोडं लवकर निघावं लागेल, so can we move the meeting?",
+    output: "I need to leave early tomorrow. Could we move the meeting?",
+  },
+];
 
-export default function DictationPanel() {
-  const { token, signOut } = useAuth();
-  const [persona, setPersona] = useState("Work");
-  const [recording, setRecording] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [seconds, setSeconds] = useState(0);
-  const [result, setResult] = useState(null);
-  const [error, setError] = useState("");
+export default function DictationPanel({
+  expanded = false,
+  microphonePermissionState = "checking",
+}) {
+  const [micBusy, setMicBusy] = useState(false);
+  const [micStatus, setMicStatus] = useState(microphonePermissionState);
 
-  const recRef = useRef(null);
-  const timerRef = useRef(null);
+  useEffect(() => {
+    setMicStatus(microphonePermissionState);
+  }, [microphonePermissionState]);
 
-  const toggleRecording = async () => {
-    setError("");
-    if (recording) {
-      await stopAndSend();
-    } else {
-      await startRecording();
+  useEffect(() => {
+    if (Platform.OS !== "android") {
+      setMicStatus("unavailable");
+      return;
     }
-  };
 
-  const startRecording = async () => {
-    try {
-      const perm = await Audio.requestPermissionsAsync();
-      if (!perm.granted) {
-        setError("Microphone access denied — allow it in Settings");
-        return;
+    PermissionsAndroid.check(PermissionsAndroid.PERMISSIONS.RECORD_AUDIO).then(
+      (granted) => {
+        if (microphonePermissionState === "checking") {
+          setMicStatus(granted ? "granted" : "denied");
+        }
       }
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: true,
-        playsInSilentModeIOS: true,
-      });
-      const rec = new Audio.Recording();
-      await rec.prepareToRecordAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
-      await rec.startAsync();
-      recRef.current = rec;
-      setRecording(true);
-      setSeconds(0);
-      timerRef.current = setInterval(() => setSeconds((s) => s + 1), 1000);
-    } catch (e) {
-      setError("Couldn't start recording");
+    );
+  }, []);
+
+  const requestMicPermission = async () => {
+    if (Platform.OS !== "android" || micBusy || micStatus === "granted") {
+      return;
     }
-  };
 
-  const stopAndSend = async () => {
-    clearInterval(timerRef.current);
-    setRecording(false);
-
-    const rec = recRef.current;
-    recRef.current = null;
-    if (!rec) return;
-
-    setBusy(true);
+    setMicBusy(true);
+    setMicStatus("requesting");
     try {
-      await rec.stopAndUnloadAsync();
-      const uri = rec.getURI();
-      if (!uri) throw new Error("No recording");
+      const result = await PermissionsAndroid.request(
+        PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
+        {
+          title: "Microphone access",
+          message: "Mutter needs microphone access to dictate your speech.",
+          buttonPositive: "Allow microphone",
+          buttonNegative: "Not now",
+        }
+      );
 
-      const formData = new FormData();
-      formData.append("persona", persona);
-      formData.append("file", { uri, name: "recording.m4a", type: "audio/m4a" });
-
-      const res = await fetch(`${API_BASE_URL}/api/speech-to-text-translate`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
-        body: formData,
-      });
-      const data = await res.json().catch(() => ({}));
-
-      if (res.status === 401) {
-        setError("Session expired — logging you out");
-        signOut();
-        return;
-      }
-      if (!res.ok) {
-        setError(data.error || data.message || "Translation failed");
-        return;
-      }
-      setResult(data);
-      setError("");
-    } catch (e) {
-      setError("Server not reachable — is the backend + tunnel running?");
+      setMicStatus(result === PermissionsAndroid.RESULTS.GRANTED ? "granted" : "denied");
     } finally {
-      setBusy(false);
+      setMicBusy(false);
     }
   };
-
-  const meta = result ? `${result.wordsSpoken} words · ${result.wordsUsedToday}/${LIMIT_WORDS} today` : "";
 
   return (
-    <View style={styles.card}>
-      <Text style={styles.title}>Dictate</Text>
+    <View style={[styles.card, expanded && styles.cardExpanded]}>
+      <Text style={styles.title}>Say it naturally. Send it in English.</Text>
       <Text style={styles.subtitle}>
-        Tap to record, tap again to translate. Pick a style first.
+        {micStatus === "denied"
+          ? "Microphone access isn't enabled. Allow it to speak naturally and turn your words into English."
+          : micStatus === "granted"
+            ? "Microphone is enabled. Speak naturally and Mutter will turn your words into English."
+            : "Speak in the language you think in. Mutter turns it into professional, casual, or polished English for any chat."}
       </Text>
-
-      <View style={styles.personaRow}>
-        {PERSONAS.map((p) => (
-          <TouchableOpacity
-            key={p}
-            style={[styles.personaChip, persona === p && styles.personaChipActive]}
-            onPress={() => setPersona(p)}
-            disabled={recording || busy}
-          >
-            <Text style={[styles.personaText, persona === p && styles.personaTextActive]}>
-              {p}
-            </Text>
-          </TouchableOpacity>
-        ))}
-      </View>
 
       <TouchableOpacity
-        style={[styles.micButton, recording && styles.micButtonRecording, busy && styles.micButtonBusy]}
-        onPress={toggleRecording}
-        disabled={busy}
+        activeOpacity={0.85}
+        onPress={requestMicPermission}
+        disabled={micBusy || micStatus === "granted" || Platform.OS !== "android"}
+        style={[styles.button, (micBusy || micStatus === "granted") && styles.buttonDisabled]}
       >
-        <View style={[styles.micDot, recording && styles.micDotRecording]} />
+        <Text style={styles.buttonText}>
+          {micBusy
+            ? "Checking..."
+            : micStatus === "granted"
+              ? "Mic enabled"
+              : micStatus === "denied"
+                ? "Try again"
+              : "Enable microphone"}
+        </Text>
       </TouchableOpacity>
 
-      <Text style={styles.micLabel}>
-        {busy ? "Translating..." : recording ? `Recording ${seconds}s — tap to send` : "Tap to record"}
-      </Text>
-
-      {error ? <Text style={styles.error}>{error}</Text> : null}
-
-      {result ? (
-        <View style={styles.resultPanel}>
-          <Text style={styles.resultMeta}>{meta}</Text>
-          <Text style={styles.resultText}>{result.parsedOutput}</Text>
-        </View>
-      ) : null}
+      <Text style={styles.examplesTitle}>See how Mutter rewrites you</Text>
+      <ScrollView
+        style={styles.examplesScroll}
+        contentContainerStyle={styles.examplesContent}
+        showsVerticalScrollIndicator={false}
+        nestedScrollEnabled
+      >
+        {EXAMPLES.map((example) => (
+          <View key={`${example.category}-${example.input}`} style={styles.exampleCard}>
+            <Text style={styles.exampleTone}>{example.category}</Text>
+            <Text style={styles.exampleLabel}>You say</Text>
+            <Text style={styles.exampleInput}>{example.input}</Text>
+            <Text style={styles.exampleLabel}>Mutter writes</Text>
+            <Text style={styles.exampleOutput}>{example.output}</Text>
+          </View>
+        ))}
+      </ScrollView>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   card: {
-    backgroundColor: "#ffffff",
+    backgroundColor: "#000000",
     borderRadius: 20,
     borderWidth: 1,
-    borderColor: "#eeeeee",
+    borderColor: "#000000",
     padding: 20,
     marginTop: 20,
   },
+  cardExpanded: {
+    flex: 1,
+    minHeight: 0,
+  },
   title: {
     fontSize: 20,
-    fontWeight: "800",
-    color: "#111111",
+    color: "#ffffff",
     letterSpacing: -0.4,
   },
   subtitle: {
     fontSize: 13,
-    color: "#8a8a8a",
-    marginTop: 4,
-    marginBottom: 16,
-  },
-  personaRow: {
-    flexDirection: "row",
-    gap: 8,
-    marginBottom: 20,
-  },
-  personaChip: {
-    flex: 1,
-    paddingVertical: 9,
-    borderRadius: 10,
-    backgroundColor: "#f4f4f4",
-    alignItems: "center",
-  },
-  personaChipActive: {
-    backgroundColor: "#111111",
-  },
-  personaText: {
-    fontSize: 13,
-    fontWeight: "600",
-    color: "#666666",
-  },
-  personaTextActive: {
+    lineHeight: 19,
     color: "#ffffff",
+    marginTop: 4,
   },
-  micButton: {
-    alignSelf: "center",
-    width: 84,
-    height: 84,
-    borderRadius: 42,
-    borderWidth: 3,
-    borderColor: "#dddddd",
-    backgroundColor: "#f4f4f4",
+  button: {
+    marginTop: 16,
+    height: 46,
+    borderRadius: 12,
+    backgroundColor: "#ffffff",
     alignItems: "center",
     justifyContent: "center",
-    marginBottom: 10,
   },
-  micButtonRecording: {
-    borderColor: "#e5484d",
-    backgroundColor: "rgba(229,72,77,0.08)",
+  buttonDisabled: {
+    opacity: 0.72,
   },
-  micButtonBusy: {
-    opacity: 0.5,
+  buttonText: {
+    fontSize: 14,
+    color: "#000000",
   },
-  micDot: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
-    backgroundColor: "#e5484d",
+  examplesTitle: {
+    marginTop: 22,
+    fontSize: 16,
+    color: "#ffffff",
   },
-  micDotRecording: {
-    width: 24,
-    height: 24,
-    borderRadius: 6,
-  },
-  micLabel: {
-    textAlign: "center",
-    fontSize: 13,
-    color: "#8a8a8a",
-    marginBottom: 4,
-  },
-  error: {
-    textAlign: "center",
-    color: "#e5484d",
-    fontSize: 13,
+  examplesScroll: {
+    flex: 1,
+    minHeight: 0,
     marginTop: 10,
   },
-  resultPanel: {
-    backgroundColor: "#f8f8f8",
+  examplesContent: {
+    paddingBottom: 4,
+    gap: 10,
+  },
+  exampleCard: {
     borderRadius: 14,
     padding: 14,
-    marginTop: 12,
+    backgroundColor: "#1b1b1b",
   },
-  resultMeta: {
-    fontSize: 12,
-    color: "#0a7ea4",
-    fontWeight: "600",
-    marginBottom: 6,
+  exampleTone: {
+    alignSelf: "flex-start",
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    borderRadius: 10,
+    backgroundColor: "#ffffff",
+    color: "#000000",
+    fontSize: 11,
   },
-  resultText: {
-    fontSize: 15,
-    lineHeight: 22,
-    color: "#2f3138",
+  exampleLabel: {
+    marginTop: 10,
+    color: "#a8a8a8",
+    fontSize: 11,
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  },
+  exampleInput: {
+    marginTop: 4,
+    color: "#ffffff",
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  exampleOutput: {
+    marginTop: 4,
+    color: "#ffffff",
+    fontSize: 14,
+    lineHeight: 20,
   },
 });

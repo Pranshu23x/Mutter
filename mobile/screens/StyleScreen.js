@@ -1,6 +1,13 @@
-import { useState } from "react";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { useCallback, useState } from "react";
 import { StatusBar } from "expo-status-bar";
 import { SafeAreaView, ScrollView, Text, View } from "react-native";
+import { useFocusEffect } from "@react-navigation/native";
+import Animated, {
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+} from "react-native-reanimated";
 import {
   AppChip,
   BrandMark,
@@ -11,10 +18,43 @@ import {
   styles,
 } from "../App";
 
-export default function StyleScreen({ onOpenDrawer }) {
+export default function StyleScreen({
+  onOpenProfile,
+  onStartPersonalization,
+  onPersonaChange,
+  profileLetter = "M",
+}) {
   const [activeTab, setActiveTab] = useState("personal");
+  const [personalized, setPersonalized] = useState(false);
+  const heroScale = useSharedValue(1);
   const active = STYLE_TABS.find((tab) => tab.key === activeTab) || STYLE_TABS[0];
 
+  const selectPersona = (key) => {
+    setActiveTab(key);
+    const selected = STYLE_TABS.find((tab) => tab.key === key);
+    if (selected) {
+      onPersonaChange?.(selected.label);
+    }
+  };
+
+  useFocusEffect(
+    useCallback(() => {
+      let mounted = true;
+      AsyncStorage.getItem("@mutter/personalization").then((value) => {
+        if (mounted) {
+          setPersonalized(Boolean(value));
+        }
+      });
+
+      return () => {
+        mounted = false;
+      };
+    }, [])
+  );
+
+  const heroAnimatedStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: heroScale.value }],
+  }));
   return (
     <SafeAreaView style={styles.styleSafe}>
       <StatusBar style="dark" />
@@ -25,22 +65,19 @@ export default function StyleScreen({ onOpenDrawer }) {
           contentContainerStyle={styles.styleContent}
         >
           <View style={styles.topBar}>
-            <SoftTouchableOpacity onPress={onOpenDrawer} style={styles.menuButton}>
-              <View style={styles.menuLine} />
-              <View style={styles.menuLine} />
-              <View style={styles.menuLine} />
+            <SoftTouchableOpacity onPress={onOpenProfile} style={styles.menuButton}>
+              <Text style={styles.profileBadgeText}>{profileLetter}</Text>
             </SoftTouchableOpacity>
 
             <View style={styles.brandWrap}>
               <BrandMark />
-              <Text style={styles.brandText}>Mutter</Text>
             </View>
           </View>
 
           <SegmentTabs
             tabs={STYLE_TABS}
             activeKey={activeTab}
-            onChange={setActiveTab}
+            onChange={selectPersona}
           />
 
           <View style={styles.appRow}>
@@ -56,15 +93,28 @@ export default function StyleScreen({ onOpenDrawer }) {
 
           <Text style={styles.caption}>{active.caption}</Text>
 
-          <View style={styles.heroCard}>
-            <Text style={styles.heroTitle}>Make Flow sound like you</Text>
-            <Text style={styles.heroSubtitle}>
-              Flow adapts to how you write in different apps
-            </Text>
-            <SoftTouchableOpacity style={styles.heroButton}>
-              <Text style={styles.heroButtonText}>Start now</Text>
-            </SoftTouchableOpacity>
-          </View>
+          {!personalized && (
+            <View style={styles.heroCard}>
+              <Text style={styles.heroTitle}>Say it your way. Send it in the right English.</Text>
+              <Text style={styles.heroSubtitle}>
+                Choose the tone that fits your chat, work message, or email.
+              </Text>
+              <Animated.View style={heroAnimatedStyle}>
+                <SoftTouchableOpacity
+                  onPress={onStartPersonalization}
+                  onPressIn={() => {
+                    heroScale.value = withSpring(0.97, { damping: 16, stiffness: 260 });
+                  }}
+                  onPressOut={() => {
+                    heroScale.value = withSpring(1, { damping: 14, stiffness: 220 });
+                  }}
+                  style={styles.heroButton}
+                >
+                  <Text style={styles.heroButtonText}>Start now</Text>
+                </SoftTouchableOpacity>
+              </Animated.View>
+            </View>
+          )}
 
           <StyleCard
             title={active.title}

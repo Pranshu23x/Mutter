@@ -1,6 +1,5 @@
 import { Router } from "express";
 import { createClient } from "@supabase/supabase-js";
-import { authRateLimit } from "../middleware/authRateLimit.js";
 const router= Router();
 
 const supabase= createClient(
@@ -8,13 +7,9 @@ const supabase= createClient(
     process.env.SUPABASE_SECRET_KEY,
 );
 
-//brute-force protection: 10 attempts per 5 minutes per IP
-const authLimiter = authRateLimit(10, 5 * 60 * 1000);
-
-
 //sign up route::::
 
-router.post(`/signup` , authLimiter, async(req,res)=>{
+router.post(`/signup` , async(req,res)=>{
     const {email, password} = req.body;
     if(!email || !password) return res.status(400).json({error: "Email or password required"});
 
@@ -30,7 +25,7 @@ router.post(`/signup` , authLimiter, async(req,res)=>{
 
 //log in::::
 
-router.post('/login', authLimiter, async(req,res)=>{
+router.post('/login', async(req,res)=>{
     const {email, password}=req.body;
     if(!email || !password) return res.status(400).json({error: "No email password provided"});
 

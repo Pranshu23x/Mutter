@@ -1,0 +1,1259 @@
+diff --git a/node_modules/@increase21/rn-floating-bubble/android/build.gradle b/node_modules/@increase21/rn-floating-bubble/android/build.gradle
+index 8652af9..c7de30c 100644
+--- a/node_modules/@increase21/rn-floating-bubble/android/build.gradle
++++ b/node_modules/@increase21/rn-floating-bubble/android/build.gradle
+@@ -1,15 +1,3 @@
+-buildscript {
+-  repositories {
+-    google()
+-    mavenCentral()
+-  }
+-
+-  dependencies {
+-    classpath "com.android.tools.build:gradle:8.1.1"
+-    classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.0"
+-  }
+-}
+-
+ apply plugin: "com.android.library"
+ apply plugin: "kotlin-android"
+ 
+@@ -49,6 +37,5 @@ repositories {
+ 
+ dependencies {
+   implementation "com.facebook.react:react-native:+"
+-  implementation "org.jetbrains.kotlin:kotlin-stdlib:1.9.0"
+   implementation "androidx.core:core-ktx:1.12.0"
+ }
+diff --git a/node_modules/@increase21/rn-floating-bubble/android/src/main/AndroidManifest.xml b/node_modules/@increase21/rn-floating-bubble/android/src/main/AndroidManifest.xml
+index abfce0e..731ed04 100644
+--- a/node_modules/@increase21/rn-floating-bubble/android/src/main/AndroidManifest.xml
++++ b/node_modules/@increase21/rn-floating-bubble/android/src/main/AndroidManifest.xml
+@@ -9,17 +9,32 @@
+ 
+   <!-- Android 14+: declare the foreground service type -->
+   <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
++  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+ 
+   <application>
+     <service
+       android:name=".FloatingBubbleService"
+       android:enabled="true"
+       android:exported="false"
+-      android:foregroundServiceType="specialUse">
++      android:foregroundServiceType="specialUse|microphone">
+       <property
+         android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+         android:value="floating bubble overlay" />
+     </service>
++
++    <service
++      android:name=".MutterTextInputAccessibilityService"
++      android:enabled="true"
++      android:exported="true"
++      android:label="Mutter text input detection"
++      android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
++      <intent-filter>
++        <action android:name="android.accessibilityservice.AccessibilityService" />
++      </intent-filter>
++      <meta-data
++        android:name="android.accessibilityservice"
++        android:resource="@xml/mutter_text_input_accessibility_service" />
++    </service>
+   </application>
+ 
+ </manifest>
+diff --git a/node_modules/@increase21/rn-floating-bubble/android/src/main/java/com/rnfloatingbubble/FloatingBubbleModule.kt b/node_modules/@increase21/rn-floating-bubble/android/src/main/java/com/rnfloatingbubble/FloatingBubbleModule.kt
+index 39c15a4..8821ee3 100644
+--- a/node_modules/@increase21/rn-floating-bubble/android/src/main/java/com/rnfloatingbubble/FloatingBubbleModule.kt
++++ b/node_modules/@increase21/rn-floating-bubble/android/src/main/java/com/rnfloatingbubble/FloatingBubbleModule.kt
+@@ -1,6 +1,7 @@
+ package com.rnfloatingbubble
+ 
+ import android.app.ActivityManager
++import android.content.ComponentName
+ import android.content.Context
+ import android.content.Intent
+ import android.net.Uri
+@@ -56,12 +57,24 @@ class FloatingBubbleModule(
+         }
+ 
+         val sizeDp          = if (options.hasKey("size"))             options.getInt("size")              else 60
+-        val color           = if (options.hasKey("color"))            options.getInt("color")             else 0xFF4285F4.toInt()
++        val color           = if (options.hasKey("color"))            options.getInt("color")             else 0xFF2B1F3A.toInt()
+         val icon            = if (options.hasKey("icon"))             options.getString("icon")           else null
+         // useLauncherIcon defaults to true when no explicit icon is provided
+         val useLauncherIcon = if (options.hasKey("useLauncherIcon"))  options.getBoolean("useLauncherIcon") else (icon == null)
+         val initX           = if (options.hasKey("initialX"))         options.getInt("initialX")          else 0
+         val initY           = if (options.hasKey("initialY"))         options.getInt("initialY")          else 100
++        val opacity         = if (options.hasKey("opacity"))           options.getDouble("opacity")         else 1.0
++
++        FloatingBubbleService.saveConfiguration(
++            reactContext,
++            sizeDp,
++            color,
++            icon,
++            useLauncherIcon,
++            initX,
++            initY,
++            opacity,
++        )
+ 
+         val intent = Intent(reactContext, FloatingBubbleService::class.java).apply {
+             putExtra(FloatingBubbleService.EXTRA_SIZE,              sizeDp)
+@@ -69,6 +82,7 @@ class FloatingBubbleModule(
+             putExtra(FloatingBubbleService.EXTRA_USE_LAUNCHER_ICON, useLauncherIcon)
+             putExtra(FloatingBubbleService.EXTRA_INITIAL_X,         initX)
+             putExtra(FloatingBubbleService.EXTRA_INITIAL_Y,         initY)
++            putExtra(FloatingBubbleService.EXTRA_OPACITY,           opacity)
+             icon?.let { putExtra(FloatingBubbleService.EXTRA_ICON, it) }
+         }
+ 
+@@ -81,6 +95,29 @@ class FloatingBubbleModule(
+         promise.resolve(null)
+     }
+ 
++    @ReactMethod
++    fun configure(options: ReadableMap, promise: Promise) {
++        val sizeDp          = if (options.hasKey("size"))             options.getInt("size")              else 60
++        val color           = if (options.hasKey("color"))            options.getInt("color")             else 0xFF2B1F3A.toInt()
++        val icon            = if (options.hasKey("icon"))             options.getString("icon")           else null
++        val useLauncherIcon = if (options.hasKey("useLauncherIcon"))  options.getBoolean("useLauncherIcon") else (icon == null)
++        val initX           = if (options.hasKey("initialX"))         options.getInt("initialX")          else 0
++        val initY           = if (options.hasKey("initialY"))         options.getInt("initialY")          else 100
++        val opacity         = if (options.hasKey("opacity"))           options.getDouble("opacity")         else 1.0
++
++        FloatingBubbleService.saveConfiguration(
++            reactContext,
++            sizeDp,
++            color,
++            icon,
++            useLauncherIcon,
++            initX,
++            initY,
++            opacity,
++        )
++        promise.resolve(null)
++    }
++
+     @ReactMethod
+     fun hide(promise: Promise) {
+         reactContext.stopService(
+@@ -99,6 +136,30 @@ class FloatingBubbleModule(
+         promise.resolve(hasOverlayPermission())
+     }
+ 
++    @ReactMethod
++    fun configureVoiceSession(baseUrl: String, token: String, persona: String, promise: Promise) {
++        FloatingBubbleService.saveVoiceConfiguration(reactContext, baseUrl, token, persona)
++        promise.resolve(null)
++    }
++
++    @ReactMethod
++    fun hasTextInputPermission(promise: Promise) {
++        promise.resolve(isTextInputAccessibilityEnabled())
++    }
++
++    @ReactMethod
++    fun requestTextInputPermission(promise: Promise) {
++        val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
++            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
++        }
++        reactContext.currentActivity?.startActivity(intent)
++            ?: run {
++                promise.reject("NO_ACTIVITY", "No current activity found.")
++                return
++            }
++        promise.resolve(true)
++    }
++
+     /**
+      * Opens the system "Display over other apps" settings page.
+      *
+@@ -121,7 +182,7 @@ class FloatingBubbleModule(
+             ).apply {
+                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+             }
+-            currentActivity?.startActivity(intent)
++            reactContext.currentActivity?.startActivity(intent)
+                 ?: run {
+                     pendingPermissionPromise = null
+                     promise.reject("NO_ACTIVITY", "No current activity found.")
+@@ -160,6 +221,20 @@ class FloatingBubbleModule(
+         else
+             true
+ 
++    private fun isTextInputAccessibilityEnabled(): Boolean {
++        val enabledServices = Settings.Secure.getString(
++            reactContext.contentResolver,
++            Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
++        ) ?: return false
++        val expected = ComponentName(
++            reactContext,
++            MutterTextInputAccessibilityService::class.java,
++        )
++        return enabledServices.split(':').any { value ->
++            ComponentName.unflattenFromString(value) == expected
++        }
++    }
++
+     @Suppress("DEPRECATION")
+     private fun isBubbleServiceRunning(): Boolean {
+         val manager = reactContext.getSystemService(Context.ACTIVITY_SERVICE)
+diff --git a/node_modules/@increase21/rn-floating-bubble/android/src/main/java/com/rnfloatingbubble/FloatingBubbleService.kt b/node_modules/@increase21/rn-floating-bubble/android/src/main/java/com/rnfloatingbubble/FloatingBubbleService.kt
+index 856d4d7..d0daf7e 100644
+--- a/node_modules/@increase21/rn-floating-bubble/android/src/main/java/com/rnfloatingbubble/FloatingBubbleService.kt
++++ b/node_modules/@increase21/rn-floating-bubble/android/src/main/java/com/rnfloatingbubble/FloatingBubbleService.kt
+@@ -1,12 +1,18 @@
+ package com.rnfloatingbubble
+ 
++import android.Manifest
++import android.animation.Animator
++import android.animation.AnimatorListenerAdapter
+ import android.animation.ValueAnimator
+ import android.app.Notification
+ import android.app.NotificationChannel
+ import android.app.NotificationManager
+ import android.app.PendingIntent
+ import android.app.Service
++import android.content.Context
+ import android.content.Intent
++import android.content.pm.PackageManager
++import android.content.pm.ServiceInfo
+ import android.graphics.Bitmap
+ import android.graphics.BitmapFactory
+ import android.graphics.BlurMaskFilter
+@@ -16,17 +22,35 @@ import android.graphics.Paint
+ import android.graphics.PixelFormat
+ import android.graphics.PorterDuff
+ import android.graphics.PorterDuffXfermode
++import android.graphics.Typeface
++import android.graphics.drawable.GradientDrawable
+ import android.os.Build
++import android.os.Handler
+ import android.os.IBinder
++import android.os.Looper
++import android.provider.Settings
+ import android.util.Base64
++import android.util.Log
+ import android.util.TypedValue
+ import android.view.Gravity
+ import android.view.MotionEvent
+ import android.view.View
++import android.view.ViewGroup
+ import android.view.WindowManager
+ import android.view.animation.OvershootInterpolator
++import android.widget.FrameLayout
+ import android.widget.ImageView
++import android.widget.ProgressBar
++import android.widget.TextView
+ import androidx.core.app.NotificationCompat
++import java.io.BufferedReader
++import java.io.DataOutputStream
++import java.io.File
++import java.io.FileInputStream
++import java.io.InputStreamReader
++import java.net.HttpURLConnection
++import java.net.URL
++import org.json.JSONObject
+ import kotlin.math.abs
+ import kotlin.math.roundToInt
+ 
+@@ -37,7 +61,7 @@ import kotlin.math.roundToInt
+  * other apps.  Touch handling supports:
+  *   - Drag to reposition
+  *   - Spring-snap to the nearest screen edge on release
+- *   - Tap to bring the host app to the foreground
++ *   - Tap to expand an in-place listening control
+  *
+  * Icon resolution order (first match wins):
+  *   1. Developer-supplied base64 image  (`icon` option)
+@@ -46,6 +70,8 @@ import kotlin.math.roundToInt
+  */
+ class FloatingBubbleService : Service() {
+ 
++    private val debugTag = "MutterBubble"
++
+     // -------------------------------------------------------------------------
+     // Companion / constants
+     // -------------------------------------------------------------------------
+@@ -56,11 +82,82 @@ class FloatingBubbleService : Service() {
+         const val EXTRA_ICON              = "icon"
+         const val EXTRA_INITIAL_X         = "initialX"
+         const val EXTRA_INITIAL_Y         = "initialY"
++        const val EXTRA_OPACITY           = "opacity"
+         /** When true (default) the app launcher icon is used if no custom icon is given. */
+         const val EXTRA_USE_LAUNCHER_ICON = "useLauncherIcon"
+ 
+         private const val NOTIFICATION_ID = 1001
+         private const val CHANNEL_ID      = "rn_floating_bubble_channel"
++        private const val PREFS_NAME     = "mutter_bubble_configuration"
++        private const val PREF_SIZE      = "size"
++        private const val PREF_COLOR     = "color"
++        private const val PREF_ICON      = "icon"
++        private const val PREF_INITIAL_X = "initialX"
++        private const val PREF_INITIAL_Y = "initialY"
++        private const val PREF_OPACITY   = "opacity"
++        private const val PREF_USE_LAUNCHER_ICON = "useLauncherIcon"
++        private const val PREF_ENABLED   = "enabled"
++        private const val PREF_VOICE_BASE_URL = "voiceBaseUrl"
++        private const val PREF_VOICE_TOKEN = "voiceToken"
++        private const val PREF_VOICE_PERSONA = "voicePersona"
++
++        fun saveConfiguration(
++            context: Context,
++            sizeDp: Int,
++            color: Int,
++            icon: String?,
++            useLauncherIcon: Boolean,
++            initialX: Int,
++            initialY: Int,
++            opacity: Double,
++        ) {
++            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
++                .putInt(PREF_SIZE, sizeDp)
++                .putInt(PREF_COLOR, color)
++                .putString(PREF_ICON, icon)
++                .putBoolean(PREF_USE_LAUNCHER_ICON, useLauncherIcon)
++                .putInt(PREF_INITIAL_X, initialX)
++                .putInt(PREF_INITIAL_Y, initialY)
++                .putFloat(PREF_OPACITY, opacity.toFloat())
++                .putBoolean(PREF_ENABLED, true)
++                .apply()
++        }
++
++        fun saveVoiceConfiguration(context: Context, baseUrl: String, token: String, persona: String) {
++            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
++                .putString(PREF_VOICE_BASE_URL, baseUrl.trimEnd('/'))
++                .putString(PREF_VOICE_TOKEN, token)
++                .putString(PREF_VOICE_PERSONA, persona)
++                .apply()
++        }
++
++        fun showForTextInput(context: Context) {
++            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M &&
++                !Settings.canDrawOverlays(context)
++            ) return
++
++            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
++            if (!prefs.getBoolean(PREF_ENABLED, false)) return
++            val intent = Intent(context, FloatingBubbleService::class.java).apply {
++                putExtra(EXTRA_SIZE, prefs.getInt(PREF_SIZE, 44))
++                putExtra(EXTRA_COLOR, prefs.getInt(PREF_COLOR, Color.parseColor("#2B1F3A")))
++                putExtra(EXTRA_USE_LAUNCHER_ICON, prefs.getBoolean(PREF_USE_LAUNCHER_ICON, true))
++                putExtra(EXTRA_INITIAL_X, prefs.getInt(PREF_INITIAL_X, 16))
++                putExtra(EXTRA_INITIAL_Y, prefs.getInt(PREF_INITIAL_Y, 100))
++                putExtra(EXTRA_OPACITY, prefs.getFloat(PREF_OPACITY, 0.55f).toDouble())
++                prefs.getString(PREF_ICON, null)?.let { putExtra(EXTRA_ICON, it) }
++            }
++
++            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
++                context.startForegroundService(intent)
++            } else {
++                context.startService(intent)
++            }
++        }
++
++        fun hideForTextInput(context: Context) {
++            context.stopService(Intent(context, FloatingBubbleService::class.java))
++        }
+     }
+ 
+     // -------------------------------------------------------------------------
+@@ -68,15 +165,28 @@ class FloatingBubbleService : Service() {
+     // -------------------------------------------------------------------------
+ 
+     private var windowManager: WindowManager?       = null
+-    private var bubbleView: ImageView?              = null
++    private var bubbleView: FrameLayout?            = null
++    private var bubbleImage: ImageView?             = null
++    private var stateLabel: TextView?               = null
++    private var spinner: ProgressBar?               = null
++    private var finishButton: TextView?             = null
+     private var params: WindowManager.LayoutParams? = null
+ 
+     private var bubbleSizeDp     = 60
+-    private var bubbleColor      = Color.parseColor("#4285F4")
++    private var bubbleColor      = Color.parseColor("#2B1F3A")
+     private var iconBase64: String? = null
+     private var useLauncherIcon  = true      // default: try the launcher icon
+     private var initialX         = 0
+     private var initialY         = 100
++    private var bubbleOpacity    = 1f
++    private var bubbleMode       = BubbleMode.IDLE
++    private var modeAnimator: ValueAnimator? = null
++    private var audioRecorder: android.media.MediaRecorder? = null
++    private var audioFile: File? = null
++    private val mainHandler = Handler(Looper.getMainLooper())
++    private var anchoredToLeft = true
++
++    private enum class BubbleMode { IDLE, LISTENING, PROCESSING }
+ 
+     // -------------------------------------------------------------------------
+     // Service lifecycle
+@@ -92,15 +202,32 @@ class FloatingBubbleService : Service() {
+     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+         intent?.let {
+             bubbleSizeDp    = it.getIntExtra(EXTRA_SIZE,              60)
+-            bubbleColor     = it.getIntExtra(EXTRA_COLOR,             Color.parseColor("#4285F4"))
++            bubbleColor     = it.getIntExtra(EXTRA_COLOR,             Color.parseColor("#2B1F3A"))
+             iconBase64      = it.getStringExtra(EXTRA_ICON)
+             useLauncherIcon = it.getBooleanExtra(EXTRA_USE_LAUNCHER_ICON, true)
+             initialX        = it.getIntExtra(EXTRA_INITIAL_X,         0)
+             initialY        = it.getIntExtra(EXTRA_INITIAL_Y,         100)
++            bubbleOpacity   = it.getDoubleExtra(EXTRA_OPACITY,        1.0).toFloat().coerceIn(0.25f, 1f)
+         }
+ 
+-        // Must call startForeground before doing UI work on API 26+
+-        startForeground(NOTIFICATION_ID, buildNotification())
++        if (bubbleView != null) return START_STICKY
++
++        // The idle bubble is an overlay service. It must not claim the
++        // microphone foreground-service type until the user starts dictation.
++        try {
++            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
++                startForeground(
++                    NOTIFICATION_ID,
++                    buildNotification(),
++                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
++                )
++            } else {
++                startForeground(NOTIFICATION_ID, buildNotification())
++            }
++        } catch (_: SecurityException) {
++            stopSelfResult(startId)
++            return START_NOT_STICKY
++        }
+         setupBubble()
+ 
+         return START_STICKY
+@@ -108,6 +235,7 @@ class FloatingBubbleService : Service() {
+ 
+     override fun onDestroy() {
+         super.onDestroy()
++        stopAudioRecording(deleteFile = true)
+         removeBubble()
+     }
+ 
+@@ -119,12 +247,56 @@ class FloatingBubbleService : Service() {
+         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+ 
+         val sizePx = dp2px(bubbleSizeDp)
+-        bubbleView = ImageView(this).apply {
++        bubbleView = FrameLayout(this).apply {
+             elevation = 8f
++            alpha = bubbleOpacity
++            isSoundEffectsEnabled = false
++            isHapticFeedbackEnabled = false
++        }
++        bubbleImage = ImageView(this).apply {
+             scaleType = ImageView.ScaleType.CENTER_CROP
++            setImageBitmap(resolveIcon(sizePx))
++            isSoundEffectsEnabled = false
++            isHapticFeedbackEnabled = false
++        }
++        bubbleView!!.addView(
++            bubbleImage,
++            FrameLayout.LayoutParams(sizePx, sizePx, Gravity.CENTER)
++        )
++
++        stateLabel = TextView(this).apply {
++            setTextColor(Color.WHITE)
++            textSize = 14f
++            typeface = Typeface.DEFAULT
++            gravity = Gravity.CENTER_VERTICAL
++            visibility = View.GONE
++            isSoundEffectsEnabled = false
++        }
++        bubbleView!!.addView(stateLabel, FrameLayout.LayoutParams(0, sizePx, Gravity.CENTER_VERTICAL))
++
++        spinner = ProgressBar(this).apply {
++            isIndeterminate = true
++            visibility = View.GONE
++            isSoundEffectsEnabled = false
+         }
++        bubbleView!!.addView(
++            spinner,
++            FrameLayout.LayoutParams(dp2px(22), dp2px(22), Gravity.END or Gravity.CENTER_VERTICAL)
++        )
+ 
+-        bubbleView!!.setImageBitmap(resolveIcon(sizePx))
++        finishButton = TextView(this).apply {
++            text = "\u2713"
++            setTextColor(Color.WHITE)
++            textSize = 24f
++            gravity = Gravity.CENTER
++            visibility = View.GONE
++            isSoundEffectsEnabled = false
++            isHapticFeedbackEnabled = false
++        }
++        bubbleView!!.addView(
++            finishButton,
++            FrameLayout.LayoutParams(dp2px(42), sizePx, Gravity.END or Gravity.CENTER_VERTICAL)
++        )
+ 
+         val windowType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+@@ -143,16 +315,26 @@ class FloatingBubbleService : Service() {
+             x = initialX
+             y = initialY
+         }
++        anchoredToLeft = initialX < resources.displayMetrics.widthPixels / 2
+ 
++        setIdleAppearance(sizePx)
+         windowManager!!.addView(bubbleView, params)
+         attachTouchListener()
+     }
+ 
+     private fun removeBubble() {
++        modeAnimator?.cancel()
++        stopAudioRecording(deleteFile = true)
++        mainHandler.removeCallbacksAndMessages(null)
+         try {
+             bubbleView?.let { windowManager?.removeView(it) }
+         } catch (_: Exception) { /* already detached */ }
+         bubbleView = null
++        bubbleImage = null
++        stateLabel = null
++        spinner = null
++        finishButton = null
++        bubbleMode = BubbleMode.IDLE
+     }
+ 
+     // -------------------------------------------------------------------------
+@@ -174,7 +356,7 @@ class FloatingBubbleService : Service() {
+         // 1. Developer-supplied base64 image
+         iconBase64?.let { b64 ->
+             decodeBase64Bitmap(b64)?.let { raw ->
+-                return clipToCircle(scaleBitmap(raw, sizePx))
++                return clipToCircle(makeLightLogo(scaleBitmap(raw, sizePx)))
+             }
+         }
+ 
+@@ -230,18 +412,340 @@ class FloatingBubbleService : Service() {
+     private fun scaleBitmap(src: Bitmap, targetPx: Int): Bitmap =
+         Bitmap.createScaledBitmap(src, targetPx, targetPx, true)
+ 
++    /** Removes the light asset background and turns the Mutter mark light for the dark bubble. */
++    private fun makeLightLogo(src: Bitmap): Bitmap {
++        val output = Bitmap.createBitmap(src.width, src.height, Bitmap.Config.ARGB_8888)
++        for (y in 0 until src.height) {
++            for (x in 0 until src.width) {
++                val pixel = src.getPixel(x, y)
++                val luminance =
++                    (0.299f * Color.red(pixel)) +
++                        (0.587f * Color.green(pixel)) +
++                        (0.114f * Color.blue(pixel))
++                val darkness = ((190f - luminance) / 190f).coerceIn(0f, 1f)
++                val alpha = (Color.alpha(pixel) * darkness).roundToInt()
++                output.setPixel(x, y, Color.argb(alpha, 242, 235, 255))
++            }
++        }
++        return output
++    }
++
+     // -------------------------------------------------------------------------
+     // Touch handling
+     // -------------------------------------------------------------------------
+ 
++    private fun setIdleAppearance(sizePx: Int) {
++        bubbleMode = BubbleMode.IDLE
++        bubbleView?.background = roundedBackground("#2B1F3A", "#65477F")
++        stateLabel?.visibility = View.GONE
++        spinner?.visibility = View.GONE
++        finishButton?.visibility = View.GONE
++        bubbleImage?.rotation = 0f
++
++        bubbleImage?.layoutParams = FrameLayout.LayoutParams(sizePx, sizePx, Gravity.CENTER)
++    }
++
++    private fun setListeningAppearance() {
++        bubbleView?.background = roundedBackground("#2B1F3A", "#65477F")
++        stateLabel?.let {
++            it.text = "Listening"
++            it.visibility = View.VISIBLE
++        }
++        spinner?.visibility = View.GONE
++        finishButton?.visibility = View.VISIBLE
++        configureExpandedChildren()
++    }
++
++    private fun setProcessingAppearance() {
++        bubbleView?.background = roundedBackground("#2B1F3A", "#65477F")
++        stateLabel?.let {
++            it.text = "Processing"
++            it.visibility = View.VISIBLE
++        }
++        spinner?.visibility = View.VISIBLE
++        finishButton?.visibility = View.GONE
++        configureExpandedChildren()
++    }
++
++    private fun configureExpandedChildren() {
++        val imageSize = dp2px(42)
++        bubbleImage?.layoutParams = FrameLayout.LayoutParams(
++            imageSize,
++            imageSize,
++            Gravity.START or Gravity.CENTER_VERTICAL
++        ).apply {
++            leftMargin = dp2px(8)
++        }
++        stateLabel?.layoutParams = FrameLayout.LayoutParams(
++            ViewGroup.LayoutParams.MATCH_PARENT,
++            ViewGroup.LayoutParams.MATCH_PARENT,
++            Gravity.CENTER_VERTICAL
++        ).apply {
++            leftMargin = dp2px(58)
++            rightMargin = dp2px(42)
++        }
++        spinner?.layoutParams = FrameLayout.LayoutParams(
++            dp2px(22),
++            dp2px(22),
++            Gravity.END or Gravity.CENTER_VERTICAL
++        ).apply {
++            rightMargin = dp2px(12)
++        }
++        finishButton?.layoutParams = FrameLayout.LayoutParams(
++            dp2px(42),
++            ViewGroup.LayoutParams.MATCH_PARENT,
++            Gravity.END or Gravity.CENTER_VERTICAL
++        ).apply {
++            rightMargin = dp2px(4)
++        }
++    }
++
++    private fun roundedBackground(fill: String, stroke: String): GradientDrawable =
++        GradientDrawable().apply {
++            shape = GradientDrawable.RECTANGLE
++            setColor(Color.parseColor(fill))
++            cornerRadius = dp2px(30).toFloat()
++            setStroke(dp2px(1), Color.parseColor(stroke))
++        }
++
++    private fun handleBubbleTap() {
++        when (bubbleMode) {
++            BubbleMode.IDLE -> beginListening()
++            BubbleMode.LISTENING -> finishListening()
++            BubbleMode.PROCESSING -> Unit
++        }
++    }
++
++    private fun beginListening() {
++        bubbleMode = BubbleMode.LISTENING
++        setListeningAppearance()
++        animateToMode(220, 60)
++        startSpeechRecognition()
++    }
++
++    private fun finishListening() {
++        if (bubbleMode != BubbleMode.LISTENING) return
++        val recorded = stopAudioRecording(deleteFile = false)
++        bubbleMode = BubbleMode.PROCESSING
++        setProcessingAppearance()
++
++        if (!recorded) {
++            stateLabel?.text = "Too short"
++            mainHandler.postDelayed({ collapseAfterProcessing() }, 1600L)
++            return
++        }
++        uploadRecording()
++    }
++
++    private fun collapseAfterProcessing() {
++        if (bubbleMode != BubbleMode.PROCESSING) return
++        animateToMode(bubbleSizeDp, bubbleSizeDp) {
++            setIdleAppearance(dp2px(bubbleSizeDp))
++        }
++    }
++
++    private fun startSpeechRecognition() {
++        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M &&
++            checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED
++        ) {
++            stateLabel?.text = "Tap to finish"
++            return
++        }
++
++        if (!promoteToMicrophoneForeground()) {
++            stateLabel?.text = "Microphone unavailable"
++            return
++        }
++
++        try {
++            audioFile = File(cacheDir, "mutter-${System.currentTimeMillis()}.m4a")
++            audioRecorder = android.media.MediaRecorder(this).apply {
++                setAudioSource(android.media.MediaRecorder.AudioSource.MIC)
++                setOutputFormat(android.media.MediaRecorder.OutputFormat.MPEG_4)
++                setAudioEncoder(android.media.MediaRecorder.AudioEncoder.AAC)
++                setAudioSamplingRate(44100)
++                setAudioEncodingBitRate(128000)
++                setAudioChannels(1)
++                setOutputFile(audioFile!!.absolutePath)
++                prepare()
++                start()
++            }
++            stateLabel?.text = "Recording..."
++            Log.d(debugTag, "recording started: ${audioFile?.absolutePath}")
++        } catch (error: Exception) {
++            audioRecorder = null
++            audioFile = null
++            Log.e(debugTag, "recording start failed", error)
++            stateLabel?.text = "Mic error"
++        }
++    }
++
++    private fun promoteToMicrophoneForeground(): Boolean {
++        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return true
++
++        return try {
++            val foregroundServiceType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
++                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE or
++                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
++            } else {
++                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
++            }
++            startForeground(NOTIFICATION_ID, buildNotification(), foregroundServiceType)
++            true
++        } catch (_: SecurityException) {
++            false
++        }
++    }
++
++    private fun stopAudioRecording(deleteFile: Boolean): Boolean {
++        var recorded = audioFile != null
++        audioRecorder?.let {
++            try { it.stop() } catch (error: Exception) {
++                recorded = false
++                Log.e(debugTag, "recording stop failed", error)
++            }
++            it.release()
++        }
++        audioRecorder = null
++        val bytes = audioFile?.length() ?: 0
++        if (bytes <= 0) recorded = false
++        Log.d(debugTag, "recording stopped: file=${audioFile?.absolutePath}, bytes=$bytes")
++        if (deleteFile || !recorded) {
++            audioFile?.delete()
++            audioFile = null
++        }
++        return recorded
++    }
++
++    private fun uploadRecording() {
++        val file = audioFile ?: run {
++            stateLabel?.text = "No audio"
++            mainHandler.postDelayed({ collapseAfterProcessing() }, 1600L)
++            return
++        }
++        if (file.length() < 1024) {
++            stateLabel?.text = "Too short"
++            file.delete()
++            audioFile = null
++            mainHandler.postDelayed({ collapseAfterProcessing() }, 1600L)
++            return
++        }
++        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
++        val baseUrl = prefs.getString(PREF_VOICE_BASE_URL, null)
++        val token = prefs.getString(PREF_VOICE_TOKEN, null)
++        val persona = prefs.getString(PREF_VOICE_PERSONA, "Work") ?: "Work"
++        if (baseUrl.isNullOrBlank() || token.isNullOrBlank()) {
++            stateLabel?.text = "Sign in required"
++            file.delete()
++            audioFile = null
++            mainHandler.postDelayed({ collapseAfterProcessing() }, 1600L)
++            return
++        }
++
++        Thread {
++            var connection: HttpURLConnection? = null
++            try {
++                mainHandler.post { stateLabel?.text = "Uploading..." }
++                Log.d(debugTag, "upload started: bytes=${file.length()}, persona=$persona, url=$baseUrl/api/speech-to-text-translate")
++                val boundary = "----Mutter${System.currentTimeMillis()}"
++                connection = (URL("$baseUrl/api/speech-to-text-translate").openConnection() as HttpURLConnection).apply {
++                    requestMethod = "POST"
++                    doOutput = true
++                    connectTimeout = 15_000
++                    readTimeout = 60_000
++                    setRequestProperty("Authorization", "Bearer $token")
++                    setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
++                }
++                DataOutputStream(connection.outputStream).use { output ->
++                    output.writeBytes("--$boundary\r\n")
++                    output.writeBytes("Content-Disposition: form-data; name=\"persona\"\r\n\r\n$persona\r\n")
++                    output.writeBytes("--$boundary\r\n")
++                    output.writeBytes("Content-Disposition: form-data; name=\"file\"; filename=\"mutter.m4a\"\r\n")
++                    output.writeBytes("Content-Type: audio/mp4\r\n\r\n")
++                    FileInputStream(file).use { it.copyTo(output) }
++                    output.writeBytes("\r\n--$boundary--\r\n")
++                }
++                val body = BufferedReader(InputStreamReader(if (connection.responseCode in 200..299) connection.inputStream else connection.errorStream)).use { it.readText() }
++                if (connection.responseCode in 200..299) {
++                    val translated = runCatching { JSONObject(body).optString("parsedOutput") }.getOrNull()
++                    val transcript = runCatching { JSONObject(body).optString("transcript") }.getOrNull()
++                    Log.d(debugTag, "upload succeeded: status=${connection.responseCode}, transcript=$transcript, parsedOutput=$translated")
++                    if (!translated.isNullOrBlank()) {
++                        sendBroadcast(Intent(MutterTextInputAccessibilityService.ACTION_TRANSLATION_READY).apply {
++                            setPackage(packageName)
++                            putExtra(MutterTextInputAccessibilityService.EXTRA_TRANSLATION, translated)
++                        })
++                        mainHandler.post { stateLabel?.text = "Done" }
++                        mainHandler.postDelayed({ collapseAfterProcessing() }, 900L)
++                    } else {
++                        Log.e(debugTag, "successful response had no parsedOutput: $body")
++                        mainHandler.post { stateLabel?.text = "No translation" }
++                        mainHandler.postDelayed({ collapseAfterProcessing() }, 1800L)
++                    }
++                } else {
++                    val serverMessage = runCatching { JSONObject(body).optString("message").ifBlank { JSONObject(body).optString("error") } }.getOrNull()
++                    Log.e(debugTag, "upload failed: status=${connection.responseCode}, body=$body")
++                    mainHandler.post { stateLabel?.text = serverMessage ?: "Translation failed" }
++                    mainHandler.postDelayed({ collapseAfterProcessing() }, 2200L)
++                }
++            } catch (error: Exception) {
++                Log.e(debugTag, "upload exception", error)
++                mainHandler.post { stateLabel?.text = "Translation failed" }
++                mainHandler.postDelayed({ collapseAfterProcessing() }, 2200L)
++            } finally {
++                connection?.disconnect()
++                file.delete()
++                audioFile = null
++            }
++        }.start()
++    }
++
++    private fun animateToMode(targetWidthDp: Int, targetHeightDp: Int, onEnd: (() -> Unit)? = null) {
++        val layout = params ?: return
++        val startWidth = layout.width
++        val startHeight = layout.height
++        val targetWidth = dp2px(targetWidthDp)
++        val targetHeight = dp2px(targetHeightDp)
++        val screenWidth = resources.displayMetrics.widthPixels
++        val targetX = if (anchoredToLeft) 0 else (screenWidth - targetWidth).coerceAtLeast(0)
++        val startX = layout.x
++        val startY = layout.y
++        val targetY = (startY - (targetHeight - startHeight) / 2)
++            .coerceIn(0, (resources.displayMetrics.heightPixels - targetHeight).coerceAtLeast(0))
++
++        modeAnimator?.cancel()
++        modeAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
++            duration = 260L
++            interpolator = android.view.animation.DecelerateInterpolator()
++            addUpdateListener { animator ->
++                val progress = animator.animatedValue as Float
++                layout.width = lerp(startWidth, targetWidth, progress)
++                layout.height = lerp(startHeight, targetHeight, progress)
++                layout.x = lerp(startX, targetX, progress)
++                layout.y = lerp(startY, targetY, progress)
++                safeUpdateLayout()
++            }
++            addListener(object : AnimatorListenerAdapter() {
++                override fun onAnimationEnd(animation: Animator) {
++                    onEnd?.invoke()
++                }
++            })
++            start()
++        }
++    }
++
++    private fun lerp(start: Int, end: Int, progress: Float): Int =
++        (start + (end - start) * progress).roundToInt()
++
+     private fun attachTouchListener() {
+         var downParamsX = 0
+         var downParamsY = 0
+         var downRawX    = 0f
+         var downRawY    = 0f
+         var isDragging  = false
++        var finishingPress = false
+ 
+-        bubbleView?.setOnTouchListener { _: View, event: MotionEvent ->
++        bubbleView?.setOnTouchListener { view: View, event: MotionEvent ->
+             when (event.action) {
+                 MotionEvent.ACTION_DOWN -> {
+                     downParamsX = params?.x ?: 0
+@@ -249,6 +753,8 @@ class FloatingBubbleService : Service() {
+                     downRawX    = event.rawX
+                     downRawY    = event.rawY
+                     isDragging  = false
++                    finishingPress = bubbleMode == BubbleMode.LISTENING &&
++                            isInsideFinishButton(view, event.x, event.y)
+                     true
+                 }
+ 
+@@ -257,6 +763,7 @@ class FloatingBubbleService : Service() {
+                     val dy = (event.rawY - downRawY).toInt()
+                     if (!isDragging && (abs(dx) > 8 || abs(dy) > 8)) {
+                         isDragging = true
++                        finishingPress = false
+                     }
+                     if (isDragging) {
+                         params?.x = downParamsX + dx
+@@ -267,7 +774,14 @@ class FloatingBubbleService : Service() {
+                 }
+ 
+                 MotionEvent.ACTION_UP -> {
+-                    if (isDragging) snapToEdge() else openHostApp()
++                    if (finishingPress && isInsideFinishButton(view, event.x, event.y)) {
++                        finishListening()
++                    } else if (isDragging) {
++                        snapToEdge()
++                    } else {
++                        handleBubbleTap()
++                    }
++                    finishingPress = false
+                     true
+                 }
+ 
+@@ -276,6 +790,13 @@ class FloatingBubbleService : Service() {
+         }
+     }
+ 
++    /** Hit-test for the finish ("\u2713") button, shown while listening. */
++    private fun isInsideFinishButton(view: View, x: Float, y: Float): Boolean {
++        if (view.width <= 0) return false
++        val buttonStart = (view.width - dp2px(46)).coerceAtLeast(0)
++        return x >= buttonStart && y >= 0f && y <= view.height.toFloat()
++    }
++
+     // -------------------------------------------------------------------------
+     // Snap animation
+     // -------------------------------------------------------------------------
+@@ -283,9 +804,10 @@ class FloatingBubbleService : Service() {
+     private fun snapToEdge() {
+         val screenWidth = resources.displayMetrics.widthPixels
+         val currentX    = params?.x ?: 0
+-        val bubbleWidth = dp2px(bubbleSizeDp)
++        val bubbleWidth = params?.width ?: dp2px(bubbleSizeDp)
+         val targetX     = if (currentX + bubbleWidth / 2 < screenWidth / 2) 0
+                           else screenWidth - bubbleWidth
++        anchoredToLeft = targetX == 0
+ 
+         ValueAnimator.ofInt(currentX, targetX).apply {
+             duration     = 350L
+@@ -304,22 +826,6 @@ class FloatingBubbleService : Service() {
+         } catch (_: Exception) { /* view already removed */ }
+     }
+ 
+-    // -------------------------------------------------------------------------
+-    // Open host app
+-    // -------------------------------------------------------------------------
+-
+-    private fun openHostApp() {
+-        val intent = packageManager
+-            .getLaunchIntentForPackage(packageName)
+-            ?.apply {
+-                addFlags(
+-                    Intent.FLAG_ACTIVITY_NEW_TASK or
+-                    Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
+-                )
+-            }
+-        intent?.let { startActivity(it) }
+-    }
+-
+     // -------------------------------------------------------------------------
+     // Notification (required for foreground service)
+     // -------------------------------------------------------------------------
+diff --git a/node_modules/@increase21/rn-floating-bubble/android/src/main/java/com/rnfloatingbubble/MutterTextInputAccessibilityService.kt b/node_modules/@increase21/rn-floating-bubble/android/src/main/java/com/rnfloatingbubble/MutterTextInputAccessibilityService.kt
+new file mode 100644
+index 0000000..60c75f2
+--- /dev/null
++++ b/node_modules/@increase21/rn-floating-bubble/android/src/main/java/com/rnfloatingbubble/MutterTextInputAccessibilityService.kt
+@@ -0,0 +1,123 @@
++package com.rnfloatingbubble
++
++import android.accessibilityservice.AccessibilityService
++import android.accessibilityservice.AccessibilityServiceInfo
++import android.content.BroadcastReceiver
++import android.content.Context
++import android.content.Intent
++import android.content.IntentFilter
++import android.os.Build
++import android.os.Bundle
++import android.os.Handler
++import android.os.Looper
++import android.view.accessibility.AccessibilityEvent
++import android.view.accessibility.AccessibilityNodeInfo
++
++/** Shows the bubble only while another app has an editable field focused. */
++class MutterTextInputAccessibilityService : AccessibilityService() {
++
++    companion object {
++        const val ACTION_TRANSLATION_READY = "com.anonymous.mobile.TRANSLATION_READY"
++        const val EXTRA_TRANSLATION = "translation"
++    }
++
++    private val mainHandler = Handler(Looper.getMainLooper())
++
++    private val translationReceiver = object : BroadcastReceiver() {
++        override fun onReceive(context: Context?, intent: Intent?) {
++            val text = intent?.getStringExtra(EXTRA_TRANSLATION).orEmpty()
++            if (text.isBlank()) return
++            insertTextIntoFocusedField(text)
++        }
++    }
++
++    /**
++     * Sets the translated text into the currently focused editable field.
++     * Retries for a short window because the active window/node may not be
++     * resolvable the instant the translation broadcast arrives.
++     */
++    private fun insertTextIntoFocusedField(text: String) {
++        val arguments = Bundle().apply {
++            putCharSequence(
++                AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
++                text
++            )
++        }
++
++        fun tryInsert(): Boolean {
++            val node = rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
++                ?: return false
++            return try {
++                node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)
++            } catch (_: Exception) {
++                false
++            } finally {
++                node.recycle()
++            }
++        }
++
++        if (tryInsert()) return
++
++        var attempts = 0
++        val retry = object : Runnable {
++            override fun run() {
++                if (tryInsert() || ++attempts >= 10) return
++                mainHandler.postDelayed(this, 250L)
++            }
++        }
++        mainHandler.postDelayed(retry, 250L)
++    }
++
++    override fun onServiceConnected() {
++        val filter = IntentFilter(ACTION_TRANSLATION_READY)
++        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
++            registerReceiver(translationReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
++        } else {
++            registerReceiver(translationReceiver, filter)
++        }
++        serviceInfo = serviceInfo.apply {
++            eventTypes = AccessibilityEvent.TYPE_VIEW_FOCUSED or
++                    AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
++            feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
++            notificationTimeout = 100
++            flags = AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
++        }
++    }
++
++    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
++        if (event == null) return
++
++        when (event.eventType) {
++            AccessibilityEvent.TYPE_VIEW_FOCUSED -> {
++                if (event.source?.isEditable == true) {
++                    FloatingBubbleService.showForTextInput(this)
++                } else {
++                    FloatingBubbleService.hideForTextInput(this)
++                }
++            }
++
++            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> syncFocusedInput()
++        }
++    }
++
++    override fun onInterrupt() {
++        FloatingBubbleService.hideForTextInput(this)
++    }
++
++    override fun onDestroy() {
++        mainHandler.removeCallbacksAndMessages(null)
++        unregisterReceiver(translationReceiver)
++        FloatingBubbleService.hideForTextInput(this)
++        super.onDestroy()
++    }
++
++    private fun syncFocusedInput() {
++        val focusedNode = rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
++        if (focusedNode?.isEditable == true) {
++            FloatingBubbleService.showForTextInput(this)
++        } else {
++            FloatingBubbleService.hideForTextInput(this)
++        }
++        focusedNode?.recycle()
++    }
++}
+diff --git a/node_modules/@increase21/rn-floating-bubble/android/src/main/res/values/strings.xml b/node_modules/@increase21/rn-floating-bubble/android/src/main/res/values/strings.xml
+index 5d3adb3..dd378b7 100644
+--- a/node_modules/@increase21/rn-floating-bubble/android/src/main/res/values/strings.xml
++++ b/node_modules/@increase21/rn-floating-bubble/android/src/main/res/values/strings.xml
+@@ -4,4 +4,5 @@
+   <string name="floating_bubble_notification_text">Tap to open the app</string>
+   <string name="floating_bubble_channel_name">Floating Bubble</string>
+   <string name="floating_bubble_channel_desc">Shows while the floating bubble is active</string>
++  <string name="mutter_text_input_accessibility_description">Shows the Mutter bubble when an editable text field is focused.</string>
+ </resources>
+diff --git a/node_modules/@increase21/rn-floating-bubble/android/src/main/res/xml/mutter_text_input_accessibility_service.xml b/node_modules/@increase21/rn-floating-bubble/android/src/main/res/xml/mutter_text_input_accessibility_service.xml
+new file mode 100644
+index 0000000..07d9f3e
+--- /dev/null
++++ b/node_modules/@increase21/rn-floating-bubble/android/src/main/res/xml/mutter_text_input_accessibility_service.xml
+@@ -0,0 +1,8 @@
++<?xml version="1.0" encoding="utf-8"?>
++<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
++    android:accessibilityEventTypes="typeViewFocused|typeWindowStateChanged"
++    android:accessibilityFeedbackType="feedbackGeneric"
++    android:canRetrieveWindowContent="true"
++    android:description="@string/mutter_text_input_accessibility_description"
++    android:notificationTimeout="100"
++    android:accessibilityFlags="flagRetrieveInteractiveWindows" />
+diff --git a/node_modules/@increase21/rn-floating-bubble/lib/index.d.ts b/node_modules/@increase21/rn-floating-bubble/lib/index.d.ts
+index 03f5eba..59cf930 100644
+--- a/node_modules/@increase21/rn-floating-bubble/lib/index.d.ts
++++ b/node_modules/@increase21/rn-floating-bubble/lib/index.d.ts
+@@ -34,6 +34,8 @@ export interface FloatingBubbleOptions {
+      * Initial Y position of the bubble in screen pixels. Defaults to 100.
+      */
+     initialY?: number;
++    /** Bubble opacity between 0.25 and 1. */
++    opacity?: number;
+ }
+ declare const FloatingBubble: {
+     /**
+@@ -45,6 +47,7 @@ declare const FloatingBubble: {
+      * @throws if the permission has not been granted.
+      */
+     show(options?: FloatingBubbleOptions): Promise<void>;
++    configure(options?: FloatingBubbleOptions): Promise<void>;
+     /**
+      * Hide and destroy the floating bubble.
+      */
+@@ -57,6 +60,9 @@ declare const FloatingBubble: {
+      * Returns `true` if the SYSTEM_ALERT_WINDOW permission has been granted.
+      */
+     hasPermission(): Promise<boolean>;
++    configureVoiceSession(baseUrl: string, token: string, persona?: string): Promise<void>;
++    hasTextInputPermission(): Promise<boolean>;
++    requestTextInputPermission(): Promise<boolean>;
+     /**
+      * Opens the system settings screen so the user can grant the
+      * SYSTEM_ALERT_WINDOW ("Display over other apps") permission.
+diff --git a/node_modules/@increase21/rn-floating-bubble/lib/index.js b/node_modules/@increase21/rn-floating-bubble/lib/index.js
+index e5b999e..dc0e7e9 100644
+--- a/node_modules/@increase21/rn-floating-bubble/lib/index.js
++++ b/node_modules/@increase21/rn-floating-bubble/lib/index.js
+@@ -32,9 +32,26 @@ const FloatingBubble = {
+             useLauncherIcon: options.useLauncherIcon ?? !hasCustomIcon,
+             initialX: options.initialX ?? 0,
+             initialY: options.initialY ?? 100,
++            opacity: options.opacity ?? 1,
+         };
+         return NativeFloatingBubble.show(opts);
+     },
++    configure(options = {}) {
++        if (Platform.OS !== 'android') {
++            return Promise.resolve();
++        }
++        const hasCustomIcon = options.icon != null;
++        const opts = {
++            size: options.size ?? 60,
++            color: options.color ?? 0xff4285f4,
++            icon: options.icon ?? null,
++            useLauncherIcon: options.useLauncherIcon ?? !hasCustomIcon,
++            initialX: options.initialX ?? 0,
++            initialY: options.initialY ?? 100,
++            opacity: options.opacity ?? 1,
++        };
++        return NativeFloatingBubble.configure(opts);
++    },
+     /**
+      * Hide and destroy the floating bubble.
+      */
+@@ -62,6 +79,24 @@ const FloatingBubble = {
+         }
+         return NativeFloatingBubble.hasPermission();
+     },
++    configureVoiceSession(baseUrl, token, persona = 'Work') {
++        if (Platform.OS !== 'android') {
++            return Promise.resolve();
++        }
++        return NativeFloatingBubble.configureVoiceSession(baseUrl, token, persona);
++    },
++    hasTextInputPermission() {
++        if (Platform.OS !== 'android') {
++            return Promise.resolve(false);
++        }
++        return NativeFloatingBubble.hasTextInputPermission();
++    },
++    requestTextInputPermission() {
++        if (Platform.OS !== 'android') {
++            return Promise.resolve(false);
++        }
++        return NativeFloatingBubble.requestTextInputPermission();
++    },
+     /**
+      * Opens the system settings screen so the user can grant the
+      * SYSTEM_ALERT_WINDOW ("Display over other apps") permission.
+diff --git a/node_modules/@increase21/rn-floating-bubble/src/index.ts b/node_modules/@increase21/rn-floating-bubble/src/index.ts
+index bcdcc0c..5c8c64f 100644
+--- a/node_modules/@increase21/rn-floating-bubble/src/index.ts
++++ b/node_modules/@increase21/rn-floating-bubble/src/index.ts
+@@ -53,6 +53,8 @@ export interface FloatingBubbleOptions {
+    * Initial Y position of the bubble in screen pixels. Defaults to 100.
+    */
+   initialY?: number;
++  /** Bubble opacity between 0.25 and 1. */
++  opacity?: number;
+ }
+ 
+ const FloatingBubble = {
+@@ -77,10 +79,28 @@ const FloatingBubble = {
+       useLauncherIcon: options.useLauncherIcon ?? !hasCustomIcon,
+       initialX: options.initialX ?? 0,
+       initialY: options.initialY ?? 100,
++      opacity: options.opacity ?? 1,
+     };
+     return NativeFloatingBubble.show(opts);
+   },
+ 
++  configure(options: FloatingBubbleOptions = {}): Promise<void> {
++    if (Platform.OS !== 'android') {
++      return Promise.resolve();
++    }
++    const hasCustomIcon = options.icon != null;
++    const opts = {
++      size: options.size ?? 60,
++      color: options.color ?? 0xff4285f4,
++      icon: options.icon ?? null,
++      useLauncherIcon: options.useLauncherIcon ?? !hasCustomIcon,
++      initialX: options.initialX ?? 0,
++      initialY: options.initialY ?? 100,
++      opacity: options.opacity ?? 1,
++    };
++    return NativeFloatingBubble.configure(opts);
++  },
++
+   /**
+    * Hide and destroy the floating bubble.
+    */
+@@ -111,6 +131,20 @@ const FloatingBubble = {
+     return NativeFloatingBubble.hasPermission();
+   },
+ 
++  hasTextInputPermission(): Promise<boolean> {
++    if (Platform.OS !== 'android') {
++      return Promise.resolve(false);
++    }
++    return NativeFloatingBubble.hasTextInputPermission();
++  },
++
++  requestTextInputPermission(): Promise<boolean> {
++    if (Platform.OS !== 'android') {
++      return Promise.resolve(false);
++    }
++    return NativeFloatingBubble.requestTextInputPermission();
++  },
++
+   /**
+    * Opens the system settings screen so the user can grant the
+    * SYSTEM_ALERT_WINDOW ("Display over other apps") permission.

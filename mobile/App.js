@@ -1,10 +1,13 @@
 import { useEffect, useRef, useState } from "react";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
   ActivityIndicator,
   Animated,
   Dimensions,
   Easing,
   Modal,
+  PermissionsAndroid,
+  Platform,
   StyleSheet,
   Text,
   TextInput,
@@ -21,15 +24,24 @@ import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { SCREENS } from "./routes";
 import { useFloatingBubbleController } from "./bubble";
+import { API_BASE_URL } from "./api.config";
 import HomeRoute from "./screens/HomeScreen";
 import StyleRoute from "./screens/StyleScreen";
 import SettingsRoute from "./screens/SettingsScreen";
 import AccountRoute from "./screens/AccountScreen";
+import ProfileRoute from "./screens/ProfileScreen";
+import PersonalizationRoute from "./screens/PersonalizationScreen";
 import AuthScreen from "./screens/AuthScreen";
 import { AuthProvider, useAuth } from "./auth/AuthContext";
+import BrandMark from "./components/BrandMark";
+import * as WebBrowser from "expo-web-browser";
+
+export { BrandMark };
 
 export const SCREEN_WIDTH = Dimensions.get("window").width;
 export const DRAWER_WIDTH = Math.min(336, Math.round(SCREEN_WIDTH * 0.84));
+const MICROPHONE_PERMISSION_REQUESTED_KEY = "@mutter/microphone-permission-requested";
+const VOICE_PERSONA_KEY = "@mutter/voice-persona";
 const AnimatedTouchableOpacity = Animated.createAnimatedComponent(TouchableOpacity);
 const RootStack = createNativeStackNavigator();
 const Tab = createBottomTabNavigator();
@@ -39,7 +51,7 @@ export const STYLE_TABS = [
   {
     key: "personal",
     label: "Personal",
-    caption: "This style applies in consumer messengers",
+    caption: "Natural English for personal chats",
     title: "Casual",
     subtitle: "Caps + Less punctuation",
     preview:
@@ -54,7 +66,7 @@ export const STYLE_TABS = [
   {
     key: "work",
     label: "Work",
-    caption: "This style applies in workplace messengers",
+    caption: "Clear, professional English for work chats",
     title: "Formal.",
     subtitle: "Caps + Punctuation",
     preview: "Hey, if youre free, lets chat about the great results.",
@@ -66,7 +78,7 @@ export const STYLE_TABS = [
   {
     key: "email",
     label: "Email",
-    caption: "This style applies in all major email apps",
+    caption: "Polished English for every email",
     title: "Formal.",
     subtitle: "Caps + Punctuation",
     preview:
@@ -81,7 +93,7 @@ export const STYLE_TABS = [
   {
     key: "other",
     label: "Other",
-    caption: "This style applies in all other apps",
+    caption: "The right English for every other app",
     title: "Casual.",
     subtitle: "Caps + Less punctuation",
     preview:
@@ -107,17 +119,50 @@ function NavigatorTabBar({ state, navigation }) {
   );
 }
 
-function MainTabs({ onOpenDrawer }) {
+function MainTabs({
+  onOpenProfile,
+  onStartPersonalization,
+  onPersonaChange,
+  profileLetter,
+  onEnableBubble,
+  onEnableMicrophone,
+  bubbleEnabled,
+  bubblePermissionState,
+  bubbleTextInputPermissionState,
+  bubbleVisible,
+  bubbleBusy,
+  microphonePermissionState,
+}) {
   return (
     <Tab.Navigator
-      screenOptions={{ headerShown: false }}
+      screenOptions={{ headerShown: false, animation: "shift" }}
       tabBar={(props) => <NavigatorTabBar {...props} />}
     >
       <Tab.Screen name={SCREENS.HOME}>
-        {() => <HomeRoute onOpenDrawer={onOpenDrawer} />}
+        {() => (
+          <HomeRoute
+            onOpenProfile={onOpenProfile}
+            profileLetter={profileLetter}
+            onEnableBubble={onEnableBubble}
+            onEnableMicrophone={onEnableMicrophone}
+            bubbleEnabled={bubbleEnabled}
+            bubblePermissionState={bubblePermissionState}
+            bubbleTextInputPermissionState={bubbleTextInputPermissionState}
+            bubbleVisible={bubbleVisible}
+            bubbleBusy={bubbleBusy}
+            microphonePermissionState={microphonePermissionState}
+          />
+        )}
       </Tab.Screen>
       <Tab.Screen name={SCREENS.STYLE}>
-        {() => <StyleRoute onOpenDrawer={onOpenDrawer} />}
+        {() => (
+          <StyleRoute
+            onOpenProfile={onOpenProfile}
+            onStartPersonalization={onStartPersonalization}
+            onPersonaChange={onPersonaChange}
+            profileLetter={profileLetter}
+          />
+        )}
       </Tab.Screen>
     </Tab.Navigator>
   );
@@ -132,15 +177,170 @@ export default function App() {
 }
 
 function AppShell() {
-  const { token, loading } = useAuth();
+  const { token, email, signOut, loading } = useAuth();
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [plan, setPlan] = useState({ plan: "free", status: null });
+  const [voicePersona, setVoicePersona] = useState("Personal");
+  const [microphonePermissionState, setMicrophonePermissionState] = useState("checking");
   const bubble = useFloatingBubbleController();
+  const startupPermissionsRequested = useRef(false);
+
+  useEffect(() => {
+    if (!token) return;
+    fetch(`${API_BASE_URL}/api/payments/subs`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then((res) => res.json().catch(() => ({})))
+      .then(setPlan)
+      .catch(() => {});
+  }, [token]);
+
+  useEffect(() => {
+    if (!token) return;
+    let mounted = true;
+    AsyncStorage.getItem(VOICE_PERSONA_KEY).then((storedPersona) => {
+      if (mounted && ["Personal", "Work", "Email", "Other"].includes(storedPersona)) {
+        setVoicePersona(storedPersona);
+      }
+    }).catch(() => {});
+    return () => {
+      mounted = false;
+    };
+  }, [token]);
+
+  useEffect(() => {
+    if (!token) return;
+    bubble.configureVoiceSession(API_BASE_URL, token, voicePersona).catch(() => {});
+  }, [bubble.configureVoiceSession, token, voicePersona]);
+
+  const planLabel =
+    plan.plan === "pro" && plan.status === "active"
+      ? "Pro"
+      : plan.status === "authenticated"
+        ? "Payment confirmed"
+        : "Free";
+  const profileLetter = (email || "M").trim().charAt(0).toUpperCase() || "M";
+  const startCheckout = async (cycle) => {
+    const res = await fetch(`${API_BASE_URL}/api/payments/create-subs`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ billing_cycle: cycle }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || data.message || "Failed to start subscription");
+    }
+
+    const url = `${API_BASE_URL}/checkout.html?subscription_id=${data.subscription_id}&key=${data.razorpay_key_id}&email=${encodeURIComponent(
+      email || ""
+    )}&cycle=${cycle}`;
+    await WebBrowser.openBrowserAsync(url);
+  };
+  const handleEnableBubble = async () => {
+    // A stale service state must not prevent the user from reopening Android
+    // settings after the overlay permission was revoked.
+    if (bubble.isBusy) {
+      return;
+    }
+
+    try {
+      const granted = await bubble.enable();
+      if (!granted) {
+        await bubble.refreshPermission();
+      }
+    } catch {
+      // Ignore failed overlay launches; the banner stays available for retry.
+      await bubble.refreshPermission().catch(() => {});
+    }
+  };
+
+  const handleEnableMicrophone = async () => {
+    if (Platform.OS !== "android") {
+      return;
+    }
+
+    setMicrophonePermissionState("requesting");
+    try {
+      const result = await PermissionsAndroid.request(
+        PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
+        {
+          title: "Microphone access",
+          message: "Mutter needs microphone access to turn your speech into English.",
+          buttonPositive: "Allow microphone",
+          buttonNegative: "Not now",
+        }
+      );
+      setMicrophonePermissionState(
+        result === PermissionsAndroid.RESULTS.GRANTED ? "granted" : "denied"
+      );
+    } catch {
+      setMicrophonePermissionState("denied");
+    }
+  };
+
+  useEffect(() => {
+    if (!token || loading || startupPermissionsRequested.current) {
+      return;
+    }
+
+    startupPermissionsRequested.current = true;
+    let active = true;
+
+    (async () => {
+      if (Platform.OS === "android") {
+        const hasMicrophonePermission = await PermissionsAndroid.check(
+          PermissionsAndroid.PERMISSIONS.RECORD_AUDIO
+        );
+        const microphonePromptWasShown = await AsyncStorage.getItem(
+          MICROPHONE_PERMISSION_REQUESTED_KEY
+        );
+
+        if (hasMicrophonePermission) {
+          setMicrophonePermissionState("granted");
+        } else if (microphonePromptWasShown === "true") {
+          setMicrophonePermissionState("denied");
+        } else {
+          setMicrophonePermissionState("requesting");
+          await AsyncStorage.setItem(MICROPHONE_PERMISSION_REQUESTED_KEY, "true");
+          const result = await PermissionsAndroid.request(
+            PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
+            {
+              title: "Microphone access",
+              message: "Mutter needs microphone access to turn your speech into English.",
+              buttonPositive: "Allow microphone",
+              buttonNegative: "Not now",
+            }
+          );
+          setMicrophonePermissionState(
+            result === PermissionsAndroid.RESULTS.GRANTED ? "granted" : "denied"
+          );
+        }
+      }
+
+      if (!active) {
+        return;
+      }
+
+      try {
+        await bubble.enable();
+      } catch {
+        await bubble.refreshPermission().catch(() => {});
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [bubble.enable, bubble.refreshPermission, loading, token]);
 
   if (loading) {
     return (
       <GestureHandlerRootView style={{ flex: 1 }}>
         <SafeAreaProvider>
-          <View style={{ flex: 1, backgroundColor: "#f9f9f9", alignItems: "center", justifyContent: "center" }}>
+          <View style={{ flex: 1, backgroundColor: "#f3ecdc", alignItems: "center", justifyContent: "center" }}>
             <ActivityIndicator size="large" color="#111111" />
           </View>
         </SafeAreaProvider>
@@ -149,17 +349,16 @@ function AppShell() {
   }
 
   if (!token) {
-    return (
-      <GestureHandlerRootView style={{ flex: 1 }}>
-        <SafeAreaProvider>
-          <AuthScreen />
-        </SafeAreaProvider>
-      </GestureHandlerRootView>
-    );
+    return <AuthScreen />;
   }
 
   const openDrawer = () => setDrawerOpen(true);
   const closeDrawer = () => setDrawerOpen(false);
+  const goToProfile = () => {
+    if (navigationRef.isReady()) {
+      navigationRef.navigate(SCREENS.PROFILE);
+    }
+  };
   const goToSettings = () => {
     closeDrawer();
     if (navigationRef.isReady()) {
@@ -172,6 +371,10 @@ function AppShell() {
       navigationRef.navigate(SCREENS.ACCOUNT);
     }
   };
+  const handleSignOut = async () => {
+    closeDrawer();
+    await signOut();
+  };
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
@@ -180,30 +383,77 @@ function AppShell() {
           <NavigationContainer ref={navigationRef}>
             <RootStack.Navigator screenOptions={{ headerShown: false }}>
               <RootStack.Screen name="MainTabs">
-                {() => <MainTabs onOpenDrawer={openDrawer} />}
+                {() => (
+          <MainTabs
+                    onOpenProfile={goToProfile}
+            onStartPersonalization={() => navigationRef.navigate(SCREENS.PERSONALIZATION)}
+            onPersonaChange={(persona) => {
+              setVoicePersona(persona);
+              AsyncStorage.setItem(VOICE_PERSONA_KEY, persona).catch(() => {});
+            }}
+                    profileLetter={profileLetter}
+                    onEnableBubble={handleEnableBubble}
+                    onEnableMicrophone={handleEnableMicrophone}
+                    bubbleEnabled={bubble.enabled}
+                    bubblePermissionState={bubble.permissionState}
+                    bubbleTextInputPermissionState={bubble.textInputPermissionState}
+                    bubbleVisible={bubble.isShowing}
+                    bubbleBusy={bubble.isBusy}
+                    microphonePermissionState={microphonePermissionState}
+                  />
+                )}
+              </RootStack.Screen>
+              <RootStack.Screen name={SCREENS.PROFILE}>
+                {(props) => (
+                  <ProfileRoute
+                    onBack={() => props.navigation.goBack()}
+                    onOpenSettings={goToSettings}
+                    onOpenAccount={goToAccount}
+                    email={email}
+                    planLabel={planLabel}
+                    onUpgrade={startCheckout}
+                  />
+                )}
               </RootStack.Screen>
               <RootStack.Screen name={SCREENS.SETTINGS}>
-                {(props) => <SettingsRoute onBack={() => props.navigation.goBack()} />}
+                {(props) => (
+                  <SettingsRoute
+                    onBack={() => props.navigation.goBack()}
+                    bubbleOpacity={bubble.opacity}
+                    onBubbleOpacityChange={bubble.setOpacity}
+                  />
+                )}
               </RootStack.Screen>
               <RootStack.Screen name={SCREENS.ACCOUNT}>
-                {(props) => <AccountRoute onBack={() => props.navigation.goBack()} />}
+                {(props) => (
+                  <AccountRoute
+                    onBack={() => props.navigation.goBack()}
+                    onUpgrade={startCheckout}
+                  />
+                )}
+              </RootStack.Screen>
+              <RootStack.Screen
+                name={SCREENS.PERSONALIZATION}
+                options={{ animation: "fade" }}
+              >
+                {(props) => (
+                  <PersonalizationRoute onClose={() => props.navigation.goBack()} />
+                )}
               </RootStack.Screen>
             </RootStack.Navigator>
           </NavigationContainer>
-
-          <GlobalDrawer
-            visible={drawerOpen}
-            onClose={closeDrawer}
-            onOpenSettings={goToSettings}
-            onOpenAccount={goToAccount}
-            bubbleVisible={bubble.isShowing}
-            bubbleBusy={bubble.isBusy}
-            onToggleBubble={async () => {
-              closeDrawer();
-              await bubble.toggle();
-            }}
-          />
         </View>
+
+        <GlobalDrawer
+          visible={drawerOpen}
+          onClose={closeDrawer}
+          onOpenSettings={goToSettings}
+          onOpenAccount={goToAccount}
+          email={email}
+          planLabel={planLabel}
+          onSignOut={handleSignOut}
+        />
+
       </SafeAreaProvider>
     </GestureHandlerRootView>
   );
@@ -214,64 +464,29 @@ function GlobalDrawer({
   onClose,
   onOpenSettings,
   onOpenAccount,
-  bubbleVisible,
-  bubbleBusy,
-  onToggleBubble,
+  email,
+  planLabel,
+  onSignOut,
 }) {
-  const [drawerMounted, setDrawerMounted] = useState(false);
   const drawerTranslate = useRef(new Animated.Value(-DRAWER_WIDTH)).current;
   const scrimOpacity = useRef(new Animated.Value(0)).current;
-  const isMountedRef = useRef(true);
 
   useEffect(() => {
-    return () => {
-      isMountedRef.current = false;
-    };
-  }, []);
-
-  useEffect(() => {
-    if (visible) {
-      setDrawerMounted(true);
-      Animated.parallel([
-        Animated.timing(drawerTranslate, {
-          toValue: 0,
-          duration: 260,
-          easing: Easing.out(Easing.cubic),
-          useNativeDriver: true,
-        }),
-        Animated.timing(scrimOpacity, {
-          toValue: 1,
-          duration: 220,
-          easing: Easing.out(Easing.quad),
-          useNativeDriver: true,
-        }),
-      ]).start();
-      return;
-    }
-
-    if (!drawerMounted) {
-      return;
-    }
-
     Animated.parallel([
       Animated.timing(drawerTranslate, {
-        toValue: -DRAWER_WIDTH,
-        duration: 220,
-        easing: Easing.in(Easing.cubic),
+        toValue: visible ? 0 : -DRAWER_WIDTH,
+        duration: visible ? 260 : 220,
+        easing: visible ? Easing.out(Easing.cubic) : Easing.in(Easing.cubic),
         useNativeDriver: true,
       }),
       Animated.timing(scrimOpacity, {
-        toValue: 0,
-        duration: 180,
-        easing: Easing.in(Easing.quad),
+        toValue: visible ? 1 : 0,
+        duration: visible ? 220 : 180,
+        easing: visible ? Easing.out(Easing.quad) : Easing.in(Easing.quad),
         useNativeDriver: true,
       }),
-    ]).start(({ finished }) => {
-      if (finished && isMountedRef.current) {
-        setDrawerMounted(false);
-      }
-    });
-  }, [visible, drawerMounted, drawerTranslate, scrimOpacity]);
+    ]).start();
+  }, [visible, drawerTranslate, scrimOpacity]);
 
   const handleAccountPress = () => {
     onClose();
@@ -281,20 +496,8 @@ function GlobalDrawer({
     onClose();
     onOpenSettings();
   };
-  const handleBubblePress = async () => {
-    if (bubbleBusy) {
-      return;
-    }
-
-    await onToggleBubble();
-  };
-
-  if (!drawerMounted) {
-    return null;
-  }
-
   return (
-    <View style={styles.drawerLayer} pointerEvents="box-none">
+    <View style={styles.drawerLayer} pointerEvents={visible ? "auto" : "none"}>
       <TouchableOpacity activeOpacity={1} onPress={onClose} style={styles.drawerScrimHitArea}>
         <Animated.View
           pointerEvents="none"
@@ -314,12 +517,13 @@ function GlobalDrawer({
         <View style={styles.drawerContent}>
           <View style={styles.drawerProfileCard}>
             <View style={styles.drawerAvatar}>
-              <Text style={styles.drawerAvatarText}>P</Text>
+              <Text style={styles.drawerAvatarText}>
+                {(email || "M").trim().charAt(0).toUpperCase() || "M"}
+              </Text>
             </View>
-            <Text style={styles.drawerName}>Pranshu</Text>
-            <Text style={styles.drawerEmail}>pranshukr006@gmail.com</Text>
+            <Text style={styles.drawerName}>{email || "Unknown"}</Text>
             <SoftTouchableOpacity onPress={handleAccountPress} style={styles.drawerPlanPill}>
-              <Text style={styles.drawerPlanText}>Basic</Text>
+              <Text style={styles.drawerPlanText}>{planLabel}</Text>
             </SoftTouchableOpacity>
           </View>
 
@@ -330,16 +534,14 @@ function GlobalDrawer({
             <View style={styles.drawerDivider} />
 
             <DrawerMenuItem icon="settings" label="Settings" onPress={handleSettingsPress} />
-              <DrawerMenuItem
-                icon="bubble"
-                label={bubbleBusy ? "Bubble..." : bubbleVisible ? "Hide bubble" : "Show bubble"}
-                onPress={handleBubblePress}
-                disabled={bubbleBusy}
-              />
-              <DrawerMenuItem icon="account" label="Account" onPress={handleAccountPress} />
-            </View>
+            <DrawerMenuItem icon="account" label="Account" onPress={handleAccountPress} />
+
+            <View style={styles.drawerDivider} />
+
+            <DrawerMenuItem icon="signout" label="Sign out" onPress={onSignOut} />
           </View>
-        </Animated.View>
+        </View>
+      </Animated.View>
     </View>
   );
 }
@@ -397,15 +599,6 @@ export function SoftTouchableOpacity({
     >
       {children}
     </AnimatedTouchableOpacity>
-  );
-}
-
-export function AccountOptionRow({ label, onPress }) {
-  return (
-    <SoftTouchableOpacity onPress={onPress} style={styles.accountOptionRow}>
-      <Text style={styles.accountOptionLabel}>{label}</Text>
-      <Text style={styles.accountOptionGlyph}>{"\u2197"}</Text>
-    </SoftTouchableOpacity>
   );
 }
 
@@ -470,9 +663,9 @@ export function EditProfileModal({
   );
 }
 
-export function SettingsRow({ title, subtitle, showChevron = false }) {
+export function SettingsRow({ title, subtitle, showChevron = false, onPress }) {
   return (
-    <SoftTouchableOpacity style={styles.settingsRow}>
+    <SoftTouchableOpacity onPress={onPress} style={styles.settingsRow}>
       <View style={styles.settingsRowText}>
         <Text style={styles.settingsRowTitle}>{title}</Text>
         {subtitle ? <Text style={styles.settingsRowSubtitle}>{subtitle}</Text> : null}
@@ -515,8 +708,10 @@ function renderDrawerIcon(icon) {
       return <DrawerSettingsGlyph />;
     case "bubble":
       return <FlowBarsGlyph />;
-    case "account":
+case "account":
       return <DrawerAccountGlyph />;
+    case "signout":
+      return <DrawerSignOutGlyph />;
     default:
       return null;
   }
@@ -565,17 +760,46 @@ function DrawerAccountGlyph() {
   );
 }
 
-export function HomeBannerCard() {
+function DrawerSignOutGlyph() {
   return (
-    <View style={styles.homeBannerCard}>
-      <Text style={styles.homeBannerTitle}>Keep Mutter running</Text>
-      <Text style={styles.homeBannerBody}>
-        This helps Mutter stay ready when you need it. You can change this anytime.
-      </Text>
-      <SoftTouchableOpacity style={styles.homeBannerButton}>
-        <Text style={styles.homeBannerButtonText}>Allow</Text>
-      </SoftTouchableOpacity>
+    <View style={styles.drawerSignOutGlyph}>
+      <View style={styles.drawerSignOutDoor} />
+      <View style={styles.drawerSignOutShaft} />
+      <View style={styles.drawerSignOutTip} />
     </View>
+  );
+}
+
+export function HomeBannerCard({
+  buttonLabel = "Allow",
+  buttonDisabled = false,
+  onPress,
+}) {
+  const slideX = useRef(new Animated.Value(-18)).current;
+
+  useEffect(() => {
+    Animated.spring(slideX, {
+      toValue: 0,
+      speed: 22,
+      bounciness: 0,
+      useNativeDriver: true,
+    }).start();
+  }, [slideX]);
+
+  return (
+    <Animated.View style={[styles.homeBannerCard, { transform: [{ translateX: slideX }] }]}>
+      <Text style={styles.homeBannerTitle}>Allow permissions</Text>
+      <Text style={styles.homeBannerBody}>
+        Allow overlay and text-input access so you can speak naturally and turn your thoughts into English in any chat.
+      </Text>
+      <SoftTouchableOpacity
+        onPress={onPress}
+        disabled={buttonDisabled}
+        style={[styles.homeBannerButton, buttonDisabled && styles.homeBannerButtonDisabled]}
+      >
+        <Text style={styles.homeBannerButtonText}>{buttonLabel}</Text>
+      </SoftTouchableOpacity>
+    </Animated.View>
   );
 }
 
@@ -597,12 +821,12 @@ export function HomeDictationCard() {
 
       <Text style={styles.homeDictationTitle}>Start dictating!</Text>
       <Text style={styles.homeDictationBody}>
-        Open any app -> any text box -> tap Flow Bubble -> speak
+        Speak in Hindi, Tamil, Telugu, Bengali, Marathi, or the language you think in. Mutter turns it into English for any chat.
       </Text>
 
       <View style={styles.homePreviewPanel}>
         <View style={styles.homePreviewTopRow}>
-          <Text style={styles.homePreviewTitle}>Flow Bubble</Text>
+          <Text style={styles.homePreviewTitle}>Mutter Bubble</Text>
           <View style={styles.homePreviewBadge}>
             <FlowBarsGlyph />
           </View>
@@ -664,17 +888,6 @@ function KeyboardRow({ letters, offset = false, compact = false }) {
   );
 }
 
-export function BrandMark() {
-  return (
-    <View style={styles.brandMark}>
-      <View style={[styles.brandBar, styles.brandBarTall]} />
-      <View style={[styles.brandBar, styles.brandBarShort]} />
-      <View style={[styles.brandBar, styles.brandBarMid]} />
-      <View style={[styles.brandBar, styles.brandBarShorter]} />
-    </View>
-  );
-}
-
 export function SegmentTabs({ tabs, activeKey, onChange }) {
   return (
     <View style={styles.segmentedWrap}>
@@ -700,15 +913,15 @@ export function SegmentTabs({ tabs, activeKey, onChange }) {
   );
 }
 
-export function StyleCard({ title, subtitle, preview }) {
+export function StyleCard({ eyebrow, title, subtitle, preview }) {
   return (
     <View style={styles.styleCard}>
       <View style={styles.styleCardHeader}>
         <View style={styles.styleCardTitleBlock}>
+          {eyebrow ? <Text style={styles.styleCardEyebrow}>{eyebrow}</Text> : null}
           <Text style={styles.styleCardTitle}>{title}</Text>
           <Text style={styles.styleCardSubtitle}>{subtitle}</Text>
         </View>
-        <Text style={styles.chevron}>{"\u203A"}</Text>
       </View>
 
       <View style={styles.previewBubble}>
@@ -723,10 +936,10 @@ export function StyleCard({ title, subtitle, preview }) {
 
 export function BottomNav({ active, theme = "light", onHomePress, onStylePress }) {
   const darkTheme = theme === "dark";
-  const navBackground = darkTheme ? "#000000" : "#f9f9f9";
+  const navBackground = darkTheme ? "#000000" : "#f3ecdc";
   const navBorder = darkTheme ? "#111111" : "#ececec";
   const labelColor = darkTheme ? "#f9f9f9" : "#6b6d75";
-  const activeLabelColor = darkTheme ? "#f9f9f9" : "#32343b";
+  const activeLabelColor = darkTheme ? "#f9f9f9" : "#000000";
   const inactiveIconColor = darkTheme ? "#f9f9f9" : "#4d4f58";
   const activeSlotColor = darkTheme ? "rgba(249,249,249,0.12)" : "#e8e8e4";
 
@@ -747,7 +960,7 @@ export function BottomNav({ active, theme = "light", onHomePress, onStylePress }
         icon={<HomeGlyph color={active === "home" ? activeLabelColor : inactiveIconColor} />}
       />
       <NavItem
-        label="Style"
+        label="Mutter"
         active={active === "style"}
         onPress={onStylePress}
         activeSlotColor={activeSlotColor}
@@ -935,75 +1148,116 @@ function HomeGlyph({ color }) {
 export const styles = StyleSheet.create({
   homeSafe: {
     flex: 1,
-    backgroundColor: "#f5f5f5",
+    backgroundColor: "#f3ecdc",
   },
   homeScreen: {
     flex: 1,
-    backgroundColor: "#f5f5f5",
+    backgroundColor: "#f3ecdc",
   },
   homeContent: {
-    paddingHorizontal: 18,
-    paddingTop: 12,
+    paddingHorizontal: 16,
+    paddingTop: 10,
     paddingBottom: 124,
   },
+  homeContentFill: {
+    flexGrow: 1,
+  },
+  homePermissionSlot: {
+    marginTop: 52,
+  },
+  homePermissionSlotBottom: {
+    marginTop: 24,
+    flex: 1,
+    minHeight: 0,
+  },
   homeTopBar: {
-    height: 60,
+    height: 48,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    marginBottom: 20,
+    marginBottom: 18,
   },
   homeMenuButton: {
-    width: 28,
-    height: 28,
-    alignItems: "flex-start",
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: "#f04f1f",
+    alignItems: "center",
     justifyContent: "center",
+    transform: [{ translateY: 40 }],
   },
   homeBrandWrap: {
     flex: 1,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
+    transform: [{ translateY: 40 }],
   },
   homeTopSpacer: {
-    width: 28,
-    height: 28,
+    width: 36,
+    height: 36,
+  },
+  homeSlogan: {
+    alignItems: "flex-start",
+    paddingHorizontal: 18,
+    paddingVertical: 34,
+  },
+  homeSloganTitle: {
+    fontSize: 30,
+    lineHeight: 36,
+    textAlign: "left",
+    color: "#111111",
+  },
+  homeSloganBody: {
+    marginTop: 10,
+    fontSize: 13,
+    lineHeight: 18,
+    textAlign: "left",
+    color: "#111111",
   },
   homeBannerCard: {
+    position: "absolute",
+    left: 18,
+    right: 18,
+    bottom: 106,
     borderRadius: 28,
-    backgroundColor: "#ffd59f",
+    backgroundColor: "#000000",
     paddingHorizontal: 22,
-    paddingTop: 36,
-    paddingBottom: 28,
+    paddingTop: 24,
+    paddingBottom: 24,
     alignItems: "center",
+    borderBottomLeftRadius: 0,
+    borderBottomRightRadius: 0,
   },
   homeBannerTitle: {
     fontSize: 30,
     lineHeight: 36,
     textAlign: "center",
-    color: "#4d4750",
-    fontFamily: "serif",
+    color: "#ffffff",
   },
   homeBannerBody: {
     marginTop: 12,
     fontSize: 17,
     lineHeight: 24,
     textAlign: "center",
-    color: "#4d4750",
+    color: "#ffffff",
   },
   homeBannerButton: {
     width: "100%",
     height: 48,
     borderRadius: 10,
-    backgroundColor: "#4b4752",
+    backgroundColor: "#ffffff",
     alignItems: "center",
     justifyContent: "center",
     marginTop: 20,
   },
+  homeBannerButtonDisabled: {
+    opacity: 0.74,
+  },
   homeBannerButtonText: {
     fontSize: 18,
     lineHeight: 20,
-    color: "#f4f4f2",
+    color: "#000000",
   },
   homeDots: {
     marginTop: 16,
@@ -1047,7 +1301,6 @@ export const styles = StyleSheet.create({
     lineHeight: 36,
     textAlign: "center",
     color: "#4d4750",
-    fontFamily: "serif",
   },
   homeDictationBody: {
     marginTop: 8,
@@ -1077,7 +1330,6 @@ export const styles = StyleSheet.create({
     fontSize: 25,
     lineHeight: 28,
     color: "#dcc7f4",
-    fontWeight: "700",
   },
   homePreviewBadge: {
     width: 58,
@@ -1190,82 +1442,53 @@ export const styles = StyleSheet.create({
   },
   styleSafe: {
     flex: 1,
-    backgroundColor: "#f5f5f0",
+    backgroundColor: "#f3ecdc",
   },
   styleScreen: {
     flex: 1,
-    backgroundColor: "#f5f5f0",
+    backgroundColor: "#f3ecdc",
   },
   styleContent: {
     paddingHorizontal: 16,
     paddingTop: 10,
-    paddingBottom: 124,
+    paddingBottom: 140,
   },
   topBar: {
     height: 48,
-    marginBottom: 18,
+    marginBottom: 42,
     justifyContent: "center",
   },
   menuButton: {
     position: "absolute",
     left: 0,
-    top: 3,
-    width: 28,
-    height: 28,
-    alignItems: "flex-start",
+    top: 0,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: "#f04f1f",
+    alignItems: "center",
     justifyContent: "center",
+    transform: [{ translateY: 40 }],
   },
-  menuLine: {
-    width: 13,
-    height: 2,
-    borderRadius: 2,
-    backgroundColor: "#222222",
-    marginVertical: 1.3,
+  profileBadgeText: {
+    fontSize: 16,
+    lineHeight: 18,
+    color: "#ffffff",
   },
   brandWrap: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-  },
-  brandMark: {
-    width: 18,
-    height: 18,
-    flexDirection: "row",
-    alignItems: "flex-end",
-    justifyContent: "space-between",
-    marginRight: 8,
-  },
-  brandBar: {
-    width: 2.2,
-    borderRadius: 2,
-    backgroundColor: "#111111",
-  },
-  brandBarTall: {
-    height: 17,
-  },
-  brandBarShort: {
-    height: 10,
-  },
-  brandBarMid: {
-    height: 14,
-  },
-  brandBarShorter: {
-    height: 9,
-  },
-  brandText: {
-    fontSize: 22,
-    lineHeight: 26,
-    fontWeight: "700",
-    color: "#111111",
+    transform: [{ translateY: 40 }],
   },
   segmentedWrap: {
     height: 66,
     borderRadius: 33,
-    backgroundColor: "#e4e2df",
+    backgroundColor: "#000000",
     flexDirection: "row",
     overflow: "hidden",
     borderWidth: 1,
-    borderColor: "#d7d5d2",
+    borderColor: "#000000",
   },
   segment: {
     flex: 1,
@@ -1275,19 +1498,18 @@ export const styles = StyleSheet.create({
   },
   segmentDivider: {
     borderRightWidth: 1,
-    borderRightColor: "#d7d5d2",
+    borderRightColor: "#333333",
   },
   segmentActive: {
-    backgroundColor: "#d8d6d2",
+    backgroundColor: "#222222",
   },
   segmentText: {
     fontSize: 17,
     lineHeight: 20,
-    color: "#4d4e56",
+    color: "#ffffff",
   },
   segmentTextActive: {
-    color: "#141418",
-    fontWeight: "600",
+    color: "#ffffff",
   },
   appRow: {
     flexDirection: "row",
@@ -1327,7 +1549,6 @@ export const styles = StyleSheet.create({
   smallLetter: {
     fontSize: 17,
     lineHeight: 19,
-    fontWeight: "700",
   },
   messageGlyph: {
     width: 18,
@@ -1574,7 +1795,7 @@ export const styles = StyleSheet.create({
   },
   heroCard: {
     marginTop: 22,
-    backgroundColor: "#ffd59f",
+    backgroundColor: "#f1ebff",
     borderRadius: 28,
     paddingHorizontal: 20,
     paddingTop: 34,
@@ -1583,15 +1804,14 @@ export const styles = StyleSheet.create({
   heroTitle: {
     fontSize: 28,
     lineHeight: 32,
-    color: "#4d4750",
+    color: "#2b2b30",
     textAlign: "center",
-    fontFamily: "serif",
   },
   heroSubtitle: {
     marginTop: 10,
     fontSize: 17,
     lineHeight: 22,
-    color: "#4f4b50",
+    color: "#2b2b30",
     textAlign: "center",
   },
   heroButton: {
@@ -1609,7 +1829,7 @@ export const styles = StyleSheet.create({
   },
   styleCard: {
     marginTop: 22,
-    backgroundColor: "#ffffff",
+    backgroundColor: "#000000",
     borderRadius: 18,
     paddingHorizontal: 18,
     paddingTop: 18,
@@ -1632,19 +1852,18 @@ export const styles = StyleSheet.create({
   styleCardTitle: {
     fontSize: 28,
     lineHeight: 30,
-    color: "#2b2b30",
-    fontWeight: "700",
+    color: "#ffffff",
+  },
+  styleCardEyebrow: {
+    fontSize: 14,
+    lineHeight: 18,
+    color: "#bdbdbd",
+    marginBottom: 4,
   },
   styleCardSubtitle: {
     fontSize: 21,
     lineHeight: 24,
-    color: "#2b2b30",
-  },
-  chevron: {
-    fontSize: 38,
-    lineHeight: 38,
-    color: "#57555d",
-    marginTop: -2,
+    color: "#ffffff",
   },
   previewBubble: {
     marginTop: 16,
@@ -1683,7 +1902,7 @@ export const styles = StyleSheet.create({
   },
   settingsSafe: {
     flex: 1,
-    backgroundColor: "#f5f5f5",
+    backgroundColor: "#f3ecdc",
   },
   settingsContent: {
     paddingHorizontal: 28,
@@ -1714,7 +1933,6 @@ export const styles = StyleSheet.create({
     textAlign: "center",
     fontSize: 25,
     lineHeight: 28,
-    fontWeight: "600",
     color: "#1b1b1f",
   },
   settingsTopSpacer: {
@@ -1725,7 +1943,6 @@ export const styles = StyleSheet.create({
     marginBottom: 14,
     fontSize: 17,
     lineHeight: 20,
-    fontWeight: "600",
     color: "#7f7f86",
     letterSpacing: 0,
   },
@@ -1753,7 +1970,6 @@ export const styles = StyleSheet.create({
     fontSize: 21,
     lineHeight: 24,
     color: "#202026",
-    fontWeight: "600",
   },
   settingsRowSubtitle: {
     marginTop: 4,
@@ -1789,7 +2005,6 @@ export const styles = StyleSheet.create({
     fontSize: 21,
     lineHeight: 24,
     color: "#202026",
-    fontWeight: "600",
   },
   toggleRowDescription: {
     marginTop: 6,
@@ -1827,11 +2042,10 @@ export const styles = StyleSheet.create({
     fontSize: 16,
     lineHeight: 20,
     color: "#8d8d93",
-    fontWeight: "600",
   },
   accountSafe: {
     flex: 1,
-    backgroundColor: "#f5f5f5",
+    backgroundColor: "#f3ecdc",
   },
   accountContent: {
     paddingHorizontal: 28,
@@ -1862,7 +2076,6 @@ export const styles = StyleSheet.create({
     textAlign: "left",
     fontSize: 25,
     lineHeight: 28,
-    fontWeight: "600",
     color: "#1b1b1f",
     paddingLeft: 8,
   },
@@ -1883,41 +2096,6 @@ export const styles = StyleSheet.create({
     shadowRadius: 12,
     shadowOffset: { width: 0, height: 6 },
     elevation: 1,
-  },
-  accountOptionCard: {
-    backgroundColor: "#ffffff",
-    borderRadius: 22,
-    overflow: "hidden",
-    marginBottom: 18,
-    shadowColor: "#000",
-    shadowOpacity: 0.04,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 6 },
-    elevation: 1,
-  },
-  accountOptionRow: {
-    minHeight: 76,
-    paddingHorizontal: 18,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-  },
-  accountOptionLabel: {
-    flex: 1,
-    paddingRight: 12,
-    fontSize: 19,
-    lineHeight: 22,
-    color: "#1f1f24",
-  },
-  accountOptionGlyph: {
-    fontSize: 21,
-    lineHeight: 21,
-    color: "#8d8d93",
-  },
-  accountDivider: {
-    height: 1,
-    backgroundColor: "#ececec",
-    marginLeft: 18,
   },
   accountSignOutCard: {
     backgroundColor: "#ffffff",
@@ -2056,19 +2234,12 @@ export const styles = StyleSheet.create({
     fontSize: 50,
     lineHeight: 54,
     color: "#ffffff",
-    fontWeight: "500",
   },
   drawerName: {
     fontSize: 28,
     lineHeight: 32,
     color: "#1b1b21",
-    fontWeight: "700",
-  },
-  drawerEmail: {
-    marginTop: 8,
-    fontSize: 17,
-    lineHeight: 22,
-    color: "#74747b",
+    textAlign: "center",
   },
   drawerPlanPill: {
     minWidth: 104,
@@ -2085,7 +2256,6 @@ export const styles = StyleSheet.create({
     fontSize: 18,
     lineHeight: 20,
     color: "#1f1f27",
-    fontWeight: "500",
   },
   drawerMenuGroup: {
     paddingTop: 6,
@@ -2227,7 +2397,7 @@ export const styles = StyleSheet.create({
     backgroundColor: "#9a9aa2",
     marginBottom: 2,
   },
-  drawerAccountBody: {
+drawerAccountBody: {
     width: 16,
     height: 8,
     borderTopLeftRadius: 8,
@@ -2236,13 +2406,51 @@ export const styles = StyleSheet.create({
     borderBottomRightRadius: 4,
     backgroundColor: "#9a9aa2",
   },
+  drawerSignOutGlyph: {
+    width: 24,
+    height: 24,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  drawerSignOutDoor: {
+    position: "absolute",
+    left: 2,
+    top: 5,
+    width: 9,
+    height: 14,
+    borderRadius: 3,
+    borderWidth: 1.8,
+    borderRightWidth: 0,
+    borderColor: "#9a9aa2",
+  },
+  drawerSignOutShaft: {
+    position: "absolute",
+    left: 7,
+    top: 11.5,
+    width: 14,
+    height: 1.8,
+    borderRadius: 1,
+    backgroundColor: "#9a9aa2",
+  },
+  drawerSignOutTip: {
+    position: "absolute",
+    right: 1,
+    top: 8.5,
+    width: 5,
+    height: 5,
+    borderTopWidth: 1.8,
+    borderRightWidth: 1.8,
+    borderTopColor: "#9a9aa2",
+    borderRightColor: "#9a9aa2",
+    transform: [{ rotate: "45deg" }],
+  },
   bottomNav: {
     position: "absolute",
     left: 0,
     right: 0,
     bottom: 0,
     height: 92,
-    backgroundColor: "#f9f9f9",
+    backgroundColor: "#f3ecdc",
     borderTopWidth: 1,
     borderTopColor: "#ececec",
     flexDirection: "row",
@@ -2273,7 +2481,6 @@ export const styles = StyleSheet.create({
   styleGlyph: {
     fontSize: 18,
     lineHeight: 18,
-    fontWeight: "700",
     letterSpacing: 0,
     color: "#4d4f58",
   },

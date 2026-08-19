@@ -11,6 +11,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useAuth } from "../auth/AuthContext";
+import BrandMark from "../components/BrandMark";
 
 export default function AuthScreen() {
   const { signIn, signUp } = useAuth();
@@ -54,8 +55,8 @@ export default function AuthScreen() {
       >
         <View style={styles.screen}>
           <View style={styles.brandWrap}>
-            <Text style={styles.brandText}>Mutter</Text>
-            <Text style={styles.tagline}>Speak. Rewrite. Send.</Text>
+            <BrandMark style={styles.brandLogo} />
+            <Text style={styles.tagline}>Think in your language. Send in English.</Text>
           </View>
 
           <View style={styles.card}>
@@ -129,7 +130,7 @@ export default function AuthScreen() {
 const styles = StyleSheet.create({
   safe: {
     flex: 1,
-    backgroundColor: "#f9f9f9",
+    backgroundColor: "#f3ecdc",
   },
   flex: {
     flex: 1,
@@ -143,12 +144,9 @@ const styles = StyleSheet.create({
     alignItems: "center",
     marginBottom: 36,
   },
-  brandText: {
-    fontFamily: "System",
-    fontSize: 40,
-    fontWeight: "800",
-    color: "#111111",
-    letterSpacing: -1,
+  brandLogo: {
+    width: 210,
+    height: 49,
   },
   tagline: {
     marginTop: 6,
@@ -180,7 +178,6 @@ const styles = StyleSheet.create({
   },
   segmentText: {
     fontSize: 14,
-    fontWeight: "600",
     color: "#8a8a8a",
   },
   segmentTextActive: {
@@ -219,6 +216,5 @@ const styles = StyleSheet.create({
   submitText: {
     color: "#ffffff",
     fontSize: 15,
-    fontWeight: "700",
   },
 });

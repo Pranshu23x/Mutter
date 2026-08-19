@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mutter — Checkout</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, 'Segoe UI', sans-serif; background: #f9f9f9; color: #111; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; }
+    .card { background: #fff; border: 1px solid #eee; border-radius: 20px; padding: 28px; width: 100%; max-width: 380px; text-align: center; }
+    h1 { font-size: 1.4rem; font-weight: 800; letter-spacing: -0.5px; }
+    p { margin-top: 8px; color: #666; font-size: 0.92rem; line-height: 1.5; }
+    .status { margin-top: 16px; padding: 12px; border-radius: 10px; background: #f4f4f4; font-size: 0.85rem; color: #444; }
+    .status.ok { background: #e8f7ee; color: #18794e; }
+    .status.err { background: #fdebec; color: #cd2b31; }
+    .btn { margin-top: 16px; background: #111; color: #fff; border: none; border-radius: 12px; padding: 13px; font-size: 0.95rem; font-weight: 700; cursor: pointer; width: 100%; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Mutter</h1>
+    <p id="desc">Loading checkout...</p>
+    <div class="status" id="status">Preparing payment. If the window doesn't open, tap the button below.</div>
+    <button class="btn" id="retry" style="display:none;" onclick="openCheckout()">Open Payment Window</button>
+  </div>
+
+  <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+  <script>
+    const params = new URLSearchParams(window.location.search);
+    const subscriptionId = params.get("subscription_id");
+    const key = params.get("key");
+    const email = params.get("email") || "";
+    const cycle = params.get("cycle") === "yearly" ? "Yearly ₹2,999" : "Monthly ₹299";
+
+    function openCheckout() {
+      if (!subscriptionId || !key) {
+        document.getElementById("status").className = "status err";
+        document.getElementById("status").textContent = "Invalid checkout link — please try again from the app.";
+        return;
+      }
+      const options = {
+        key,
+        subscription_id: subscriptionId,
+        name: "Mutter",
+        description: "Pro " + cycle,
+        prefill: { email },
+        theme: { color: "#0a7ea4" },
+        handler: () => {
+          document.getElementById("status").className = "status ok";
+          document.getElementById("status").textContent = "Payment successful! You can close this tab and go back to Mutter.";
+        },
+        modal: {
+          ondismiss: () => {
+            document.getElementById("status").textContent = "Checkout closed — you can reopen it with the button above.";
+            document.getElementById("retry").style.display = "block";
+          },
+        },
+      };
+      new Razorpay(options).open();
+    }
+
+    document.getElementById("desc").textContent = "Pro " + cycle;
+    window.addEventListener("load", () => setTimeout(openCheckout, 400));
+  </script>
+</body>
+</html>

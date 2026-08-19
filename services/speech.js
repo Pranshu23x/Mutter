@@ -77,12 +77,18 @@ router.post('/speech-to-text-translate' , authenticate, checkWordLimit,upload.si
             .catch((err)=>console.error("Audio upload failed:", err.message)) //log instead of silent fail — debugging visibility without affecting the user
     }
     catch(err){
-        //if headers already sent, log and swallow — never try to respond twice
         if (res.headersSent) {
             console.error("Speech route error after response sent:", err.message);
             return;
         }
-        res.status(500).json({error: err.message});
+        const msg = err.message || "";
+        if (msg.includes("403") || msg.includes("Access denied")) {
+            return res.status(502).json({ error: "Translation service unavailable in your region. Disable VPN or use an Indian network." });
+        }
+        if (msg.includes("quota") || msg.includes("rate") || msg.includes("429")) {
+            return res.status(429).json({ error: "Translation service is busy. Try again in a minute." });
+        }
+        res.status(500).json({error: msg || "Translation failed"});
     }
 
 })

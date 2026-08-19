@@ -40,6 +40,7 @@ export function AuthProvider({ children }) {
   const signIn = useCallback(async (emailInput, password) => {
     const { ok, data } = await post("/api/auth/login", { email: emailInput, password });
     if (!ok) throw new Error(data.error || "Login failed");
+    if (!data.session?.access_token) throw new Error("Login did not return a session");
     await AsyncStorage.multiSet([
       [TOKEN_KEY, data.session.access_token],
       [EMAIL_KEY, emailInput],
