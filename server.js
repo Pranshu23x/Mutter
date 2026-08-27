@@ -1,13 +1,17 @@
 import dotenv from "dotenv";
 dotenv.config();
+import http from "http";
+import { WebSocketServer } from "ws";
 import express from "express";
 import cors from "cors";
 import multer from "multer"; //only used to detect MulterError (file too large, etc.)
 import speechRoutes from "./services/speech.js";
-import { arcjetProtection } from "./middleware/arcjetMiddleware.js";  
+import { handleStreamConnection } from "./services/speechStream.js";
+import { arcjetProtection } from "./middleware/arcjetMiddleware.js";
 import authRoutes from "./routes/authRoutes.js"
 import translations from "./routes/translations.js"
 import paymentRoutes, { razorpayWebhook } from "./routes/payments.js"
+import usageRoutes from "./routes/usage.js"
 const app=express();
 //regardless of express.json() below, the webhook must receive the RAW body buffer
 //for HMAC signature verification — register it BEFORE express.json()
@@ -36,6 +40,7 @@ app.use('/api/auth' , authRoutes);
 app.use('/api' , arcjetProtection, speechRoutes);
 app.use('/api/translations' , arcjetProtection, translations)
 app.use("/api/payments", arcjetProtection, paymentRoutes);
+app.use("/api/usage", arcjetProtection, usageRoutes);
 const PORT= process.env.PORT||3000;
 
 //global error handler — catches async rejections + multer/syntax errors, returns clean JSON, never crashes the process
@@ -55,7 +60,23 @@ app.use((err, req, res, next) => {
     res.status(500).json({ error: "Internal server error" });
 });
 
-app.listen(PORT, ()=>{
+// Live streaming dictation — the bubble's real-time mic pipeline. Shares the
+// same HTTP port as Express; only /api/speech-stream upgrades are accepted.
+const server = http.createServer(app);
+const wss = new WebSocketServer({ noServer: true });
+
+server.on("upgrade", (req, socket, head) => {
+    const { pathname } = new URL(req.url, "http://internal");
+    if (pathname === "/api/speech-stream") {
+        wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
+    } else {
+        socket.destroy();
+    }
+});
+
+wss.on("connection", handleStreamConnection);
+
+server.listen(PORT, ()=>{
     console.log(`Server is running on port ${PORT}`);
 });
 

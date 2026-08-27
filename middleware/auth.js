@@ -3,30 +3,40 @@
 
 import supabase from "../db/supabase.js";
 
-export async function authenticate(req, res, next) {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
-        return res.status(401).json({ error: "No bearer token exists" });
-    }
-
-    const token = authHeader.split(" ")[1];
-
+// Verifies a bearer token and resolves the user's plan. Shared by the Express
+// `authenticate` middleware (HTTP routes) and the WebSocket streaming handler,
+// which has no middleware chain of its own to hook into.
+export async function authenticateToken(token) {
     const { data: { user }, error } = await supabase.auth.getUser(token);
     if (error || !user) {
-        return res.status(401).json({ error: "User not found" });
+        throw new Error("User not found");
     }
 
-    // Fetch the user's subscription plan from the subscription table
-    // NOTE: read the latest row regardless of status — placeholder rows are
-    // created with status "inactive" (NOT "active"), because "active" would
-    // make the payments guard treat free users as paid subscribers.
+    // Fetch the user's subscription plan from the subscription table.
+    // Prefer an "active" row first — a lazy-init placeholder (status "inactive",
+    // plan "free") can be created *after* a real paid subscription already exists
+    // (e.g. a stray/duplicate init call), and picking "whatever row is newest"
+    // regardless of status would then hide an actually-active Pro subscription
+    // behind a newer placeholder. Only fall back to "latest row, any status" —
+    // and then lazy-init — when there's truly no active subscription.
     let { data: sub } = await supabase
         .from("subscription")
         .select("plan")
         .eq("user_id", user.id)
+        .eq("status", "active")
         .order("created_at", { ascending: false })
         .limit(1)
         .maybeSingle();
+
+    if (!sub) {
+        ({ data: sub } = await supabase
+            .from("subscription")
+            .select("plan")
+            .eq("user_id", user.id)
+            .order("created_at", { ascending: false })
+            .limit(1)
+            .maybeSingle());
+    }
 
     // If no subscription row exists, create one with free plan (lazy init)
     if (!sub) {
@@ -40,8 +50,22 @@ export async function authenticate(req, res, next) {
         sub = { plan: "free" };
     }
 
-    req.user = user;
-    req.user.plan = sub.plan || "free";
+    user.plan = sub.plan || "free";
+    return user;
+}
 
-    next();
+export async function authenticate(req, res, next) {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+        return res.status(401).json({ error: "No bearer token exists" });
+    }
+
+    const token = authHeader.split(" ")[1];
+
+    try {
+        req.user = await authenticateToken(token);
+        next();
+    } catch (err) {
+        return res.status(401).json({ error: err.message });
+    }
 }

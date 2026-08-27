@@ -35,7 +35,15 @@ router.post('/speech-to-text-translate' , authenticate, checkWordLimit,upload.si
 
         await updateTodayUsage(req.user.id, wordsSpoken);
 
-        const {data: translation, error: insertError}=await supabase.from('translations').insert({
+        res.json({
+            ...result,
+            wordsSpoken, //came from line 31
+            wordsUsedToday: req.wordUsage + wordsSpoken
+        });
+
+        //-------------BACKGROUND WORK: save translation + upload audio----------------------------
+        // Runs AFTER the response is sent — never touches `res`, never blocks the user
+        supabase.from('translations').insert({
             user_id: req.user.id,
             original_text: result.transcript,
             translated_text: result.parsedOutput,
@@ -43,38 +51,28 @@ router.post('/speech-to-text-translate' , authenticate, checkWordLimit,upload.si
             language_code: 'hi-IN'
         })
         .select()
-        .single();
-
-        //must check: if the insert failed, `translation` is null — touching translation.id below would crash the process AFTER res already sent
-        if (insertError || !translation) {
-            throw new Error(insertError?.message || "Failed to save translation");
-        }
-
-        res.json({
-            ...result,
-            wordsSpoken, //came from line 31
-            wordsUsedToday: req.wordUsage + wordsSpoken
-        });
-
-        //-------------BACKGROUND WORK OF UPLOADING THE FILE----------------------------
-        // Path = <userId>/<timestamp>.webm — creates a folder per user, unique filename
-        // Runs AFTER the response is sent — never touches `res`, never blocks the user
-    const audioFile=`${req.user.id}/${Date.now()}.webm`; //audio file from user
-    const translationID= translation.id;
-    supabase.storage
-            .from("audio-recordings")
-            .upload(audioFile, req.file.buffer,{
-                contentType: req.file.mimetype,
-            })
-            .then(({error})=>{
-                if(!error){
-                    return supabase
-                            .from("translations")
-                            .update({audio_url: audioFile})
-                            .eq("id" , translationID)
-                }
-            })
-            .catch((err)=>console.error("Audio upload failed:", err.message)) //log instead of silent fail — debugging visibility without affecting the user
+        .single()
+        .then(({data: translation, error: insertError}) => {
+            if (insertError || !translation) {
+                throw new Error(insertError?.message || "Failed to save translation");
+            }
+            // Path = <userId>/<timestamp>.webm — creates a folder per user, unique filename
+            const audioFile=`${req.user.id}/${Date.now()}.webm`; //audio file from user
+            return supabase.storage
+                .from("audio-recordings")
+                .upload(audioFile, req.file.buffer,{
+                    contentType: req.file.mimetype,
+                })
+                .then(({error})=>{
+                    if(!error){
+                        return supabase
+                                .from("translations")
+                                .update({audio_url: audioFile})
+                                .eq("id" , translation.id)
+                    }
+                });
+        })
+        .catch((err)=>console.error("Background translation save failed:", err.message)) //log instead of silent fail — debugging visibility without affecting the user
     }
     catch(err){
         if (res.headersSent) {

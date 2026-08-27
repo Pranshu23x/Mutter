@@ -20,7 +20,20 @@ router.post("/create-subs" , authenticate, async(req,res)=>{
     const cycle= billingCycles[billing_cycle]
     
     try{
-        const existing = await getActiveSubs(userId);
+        let existing = await getActiveSubs(userId);
+
+        // A "created" subscription is just a checkout that was started — if it's been
+        // sitting unpaid for a while, treat it as abandoned instead of blocking retries
+        // forever with "you already have a subscription".
+        const ABANDONED_AFTER_MS = 30 * 60 * 1000;
+        if (existing && existing.status === "created") {
+            const ageMs = Date.now() - new Date(existing.created_at).getTime();
+            if (ageMs > ABANDONED_AFTER_MS) {
+                await updateSubsStatus(existing.razorpay_subscription_id, "cancelled");
+                existing = null;
+            }
+        }
+
         if (existing && ["active", "created", "authenticated"].includes(existing.status)){
             return res.status(400).json({error:"You already have a active subscription"});
         }
@@ -129,27 +142,43 @@ export async function razorpayWebhook(req,res){
                     subEntity.current_end? new Date(subEntity.current_end*1000).toISOString() : null
                 );
                 break;
-            case "subscription.activated":
+            case "subscription.activated": {
                 await updateSubsStatus(
                     subEntity.id,
                     "active",
                     subEntity.current_start? new Date(subEntity.current_start*1000).toISOString(): null,
                     subEntity.current_end? new  Date(subEntity.current_end*1000).toISOString(): null
                 )
-                await supabase
-                     .from("subscription")
-                     .update({plan: "pro"})
-                     .eq("razorpay_subscription_id"  , subEntity.id)
-                     break;
-            
+                // "activated" fires once the mandate is confirmed — that isn't always the
+                // same instant as a captured payment. Only grant Pro once there's real
+                // evidence money moved (a completed billing cycle, or a captured payment
+                // attached to this event), so the plan can never flip before payment.
+                const paidCount = subEntity.paid_count ?? 0;
+                const paymentEntity = event.payload.payment?.entity;
+                const paymentCaptured = paymentEntity?.status === "captured";
+                if (paidCount >= 1 || paymentCaptured) {
+                    await supabase
+                         .from("subscription")
+                         .update({plan: "pro"})
+                         .eq("razorpay_subscription_id"  , subEntity.id)
+                }
+                break;
+            }
+
             case "subscription.charged":
-                // recurring payment succeeded ,  keep pro , update billing dates
+                // recurring payment succeeded — the unambiguous real-charge event
+                // (carries a payment_id). This is the primary trusted place Pro is
+                // granted; also covers restoring plan on a renewal after any downgrade.
                 await updateSubsStatus(
                     subEntity.id,
                     "active",
                     subEntity.current_start? new Date(subEntity.current_start*1000).toISOString():null,
                     subEntity.current_end? new Date(subEntity.current_end*1000).toISOString():null
                 );
+                await supabase
+                     .from("subscription")
+                     .update({plan: "pro"})
+                     .eq("razorpay_subscription_id", subEntity.id);
                 break;
             
             case "subscription.completed":

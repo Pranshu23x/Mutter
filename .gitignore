@@ -16,5 +16,8 @@ token.txt
 # IDE
 .idea/
 
+# personal Claude Code overrides
+.claude/settings.local.json
+
 # scripts
 start-emulator.ps1

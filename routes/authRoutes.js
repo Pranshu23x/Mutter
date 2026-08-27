@@ -1,11 +1,6 @@
 import { Router } from "express";
-import { createClient } from "@supabase/supabase-js";
+import supabase from "../db/supabase.js";
 const router= Router();
-
-const supabase= createClient(
-    process.env.SUPABASE_URL,
-    process.env.SUPABASE_SECRET_KEY,
-);
 
 //sign up route::::
 
