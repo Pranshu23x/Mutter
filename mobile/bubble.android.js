@@ -6,11 +6,10 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import FloatingBubble from "@increase21/rn-floating-bubble";
 
 const BUBBLE_SIZE_DP = 44;
-// Default landing spot for the bubble: top area, right-of-center horizontally, so it
-// shows up near the top of the screen (clear of the keyboard, which covers the bottom
-// when a text field is focused) instead of the bottom-left corner it used to default to.
-const BUBBLE_TOP_GAP_DP = 80; // clears the status bar / notch comfortably
-const BUBBLE_HORIZONTAL_FRACTION = 0.7; // 0 = left edge, 1 = right edge; 0.7 = right-of-center
+// Default landing spot for the bubble: docked to the right edge near the top of the
+// screen (clear of the keyboard, which covers the bottom when a text field is focused).
+// The native side snaps it flush to the edge.
+const BUBBLE_TOP_GAP_DP = 140; // below the status bar and most app headers
 const BUBBLE_OPACITY_KEY = "@mutter/bubble-opacity";
 const BUBBLE_ENABLED_KEY = "@mutter/bubble-enabled";
 const DEFAULT_BUBBLE_OPACITY = 0.9;
@@ -19,19 +18,16 @@ const DEFAULT_BUBBLE_OPTIONS = {
   color: 0xFF0A0A0A,
   useLauncherIcon: true,
 };
-// mutter-bubble-logo-dark.png is the DARK-BACKGROUND variant (white dots) — it nearly
-// disappears against the app's light beige background. The light-background variant
-// (dark dots) is the one that actually reads as a solid, visible bubble.
-const BUBBLE_ICON_ASSET = require("./assets/mutter-bubble-logo.png");
+// Just the dotted "mt" mark on a transparent background; the native bubble tints it
+// charcoal and draws it inside its own lavender squircle.
+const BUBBLE_ICON_ASSET = require("./assets/mutter-bubble-mark.png");
 const wait = (duration) => new Promise((resolve) => setTimeout(resolve, duration));
 
 let bubbleIconPromise;
 
 function getTopRightBubbleX() {
   const windowWidthDp = Dimensions.get("window").width;
-  return Math.round(
-    (windowWidthDp * BUBBLE_HORIZONTAL_FRACTION - BUBBLE_SIZE_DP / 2) * PixelRatio.get()
-  );
+  return Math.round((windowWidthDp - BUBBLE_SIZE_DP) * PixelRatio.get());
 }
 
 function getTopBubbleY() {

@@ -19,7 +19,8 @@
         "android.permission.RECORD_AUDIO",
         "android.permission.SYSTEM_ALERT_WINDOW"
       ],
-      "package": "com.anonymous.mobile"
+      "package": "com.rewine.mutter",
+      "versionCode": 1
     },
     "web": {
       "favicon": "./assets/favicon.png"

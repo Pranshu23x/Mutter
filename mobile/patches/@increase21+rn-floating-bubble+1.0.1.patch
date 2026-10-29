@@ -241,10 +241,10 @@ index 39c15a4..8821ee3 100644
      private fun isBubbleServiceRunning(): Boolean {
          val manager = reactContext.getSystemService(Context.ACTIVITY_SERVICE)
 diff --git a/node_modules/@increase21/rn-floating-bubble/android/src/main/java/com/rnfloatingbubble/FloatingBubbleService.kt b/node_modules/@increase21/rn-floating-bubble/android/src/main/java/com/rnfloatingbubble/FloatingBubbleService.kt
-index 856d4d7..2cd9b3e 100644
+index 856d4d7..f805aa3 100644
 --- a/node_modules/@increase21/rn-floating-bubble/android/src/main/java/com/rnfloatingbubble/FloatingBubbleService.kt
 +++ b/node_modules/@increase21/rn-floating-bubble/android/src/main/java/com/rnfloatingbubble/FloatingBubbleService.kt
-@@ -1,34 +1,60 @@
+@@ -1,34 +1,64 @@
  package com.rnfloatingbubble
  
 +import android.Manifest
@@ -259,11 +259,12 @@ index 856d4d7..2cd9b3e 100644
 +import android.content.Context
  import android.content.Intent
 -import android.graphics.Bitmap
--import android.graphics.BitmapFactory
--import android.graphics.BlurMaskFilter
 +import android.content.pm.PackageManager
 +import android.content.pm.ServiceInfo
+ import android.graphics.BitmapFactory
+-import android.graphics.BlurMaskFilter
  import android.graphics.Canvas
++import android.graphics.PorterDuff
  import android.graphics.Color
  import android.graphics.Paint
  import android.graphics.PixelFormat
@@ -277,9 +278,9 @@ index 856d4d7..2cd9b3e 100644
  import android.os.Build
 +import android.os.Handler
  import android.os.IBinder
--import android.util.Base64
 +import android.os.Looper
 +import android.provider.Settings
+ import android.util.Base64
 +import android.util.Log
  import android.util.TypedValue
  import android.view.Gravity
@@ -288,9 +289,9 @@ index 856d4d7..2cd9b3e 100644
 +import android.view.ViewGroup
  import android.view.WindowManager
  import android.view.animation.OvershootInterpolator
--import android.widget.ImageView
 +import android.view.animation.PathInterpolator
 +import android.widget.FrameLayout
+ import android.widget.ImageView
 +import android.widget.LinearLayout
 +import android.widget.TextView
  import androidx.core.app.NotificationCompat
@@ -312,7 +313,7 @@ index 856d4d7..2cd9b3e 100644
  
  /**
   * Foreground service that renders and manages the floating bubble overlay.
-@@ -37,15 +63,16 @@ import kotlin.math.roundToInt
+@@ -37,15 +67,16 @@ import kotlin.math.roundToInt
   * other apps.  Touch handling supports:
   *   - Drag to reposition
   *   - Spring-snap to the nearest screen edge on release
@@ -334,7 +335,7 @@ index 856d4d7..2cd9b3e 100644
      // -------------------------------------------------------------------------
      // Companion / constants
      // -------------------------------------------------------------------------
-@@ -56,11 +83,118 @@ class FloatingBubbleService : Service() {
+@@ -56,11 +87,122 @@ class FloatingBubbleService : Service() {
          const val EXTRA_ICON              = "icon"
          const val EXTRA_INITIAL_X         = "initialX"
          const val EXTRA_INITIAL_Y         = "initialY"
@@ -358,10 +359,12 @@ index 856d4d7..2cd9b3e 100644
 +        private const val PREF_VOICE_PERSONA = "voicePersona"
 +        private const val STREAM_SAMPLE_RATE = 16000
 +        private const val MIN_STREAM_BYTES = 9_600L // ~0.3s of 16kHz 16-bit mono PCM — below this, treat as "too short"
-+        // Auto-hide the bubble after this long with no interaction (idle, not listening/
-+        // processing) — it can always reappear later via showForTextInput, same as after
-+        // a manual dismissal.
++        // Auto-hide the bubble after this long without being used. Re-focusing a text
++        // field does NOT restart it (that happened on nearly every window change, so the
++        // bubble never left); only a dictation or a drag does. Once it times out it stays
++        // hidden until the user leaves the text field (hideForTextInput) and comes back.
 +        private const val IDLE_TIMEOUT_MS = 30 * 60 * 1000L
++        @Volatile private var hiddenByTimeout = false
 +
 +        // Bubble visual design: squircle idle glyph, three-shape row while listening/
 +        // processing (cancel circle / waveform pill / finish circle) instead of one
@@ -369,11 +372,11 @@ index 856d4d7..2cd9b3e 100644
 +        private const val COLOR_LAVENDER = "#B5ABBD"
 +        private const val COLOR_CHARCOAL = "#1E1B24"
 +        private const val COLOR_PURPLE   = "#5B3A78"
-+        private const val IDLE_SIZE_DP     = 60
-+        private const val IDLE_CORNER_DP   = 18
-+        private const val CIRCLE_SIZE_DP   = 52
-+        private const val PILL_WIDTH_DP    = 130
-+        private const val ROW_GAP_DP       = 10
++        private const val IDLE_SIZE_DP     = 44
++        private const val IDLE_CORNER_DP   = 14
++        private const val CIRCLE_SIZE_DP   = 44
++        private const val PILL_WIDTH_DP    = 112
++        private const val ROW_GAP_DP       = 8
 +        private val LISTENING_WIDTH_DP  = CIRCLE_SIZE_DP * 2 + PILL_WIDTH_DP + ROW_GAP_DP * 2
 +        private const val LISTENING_HEIGHT_DP = CIRCLE_SIZE_DP
 +        private const val PROCESSING_WIDTH_DP = PILL_WIDTH_DP
@@ -423,6 +426,7 @@ index 856d4d7..2cd9b3e 100644
 +
 +            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 +            if (!prefs.getBoolean(PREF_ENABLED, false)) return
++            if (hiddenByTimeout) return
 +            val intent = Intent(context, FloatingBubbleService::class.java).apply {
 +                putExtra(EXTRA_SIZE, prefs.getInt(PREF_SIZE, 44))
 +                putExtra(EXTRA_COLOR, prefs.getInt(PREF_COLOR, Color.parseColor("#2B1F3A")))
@@ -448,12 +452,13 @@ index 856d4d7..2cd9b3e 100644
 +        }
 +
 +        fun hideForTextInput(context: Context) {
++            hiddenByTimeout = false
 +            context.stopService(Intent(context, FloatingBubbleService::class.java))
 +        }
      }
  
      // -------------------------------------------------------------------------
-@@ -68,15 +202,51 @@ class FloatingBubbleService : Service() {
+@@ -68,15 +210,51 @@ class FloatingBubbleService : Service() {
      // -------------------------------------------------------------------------
  
      private var windowManager: WindowManager?       = null
@@ -507,7 +512,7 @@ index 856d4d7..2cd9b3e 100644
  
      // -------------------------------------------------------------------------
      // Service lifecycle
-@@ -92,15 +262,37 @@ class FloatingBubbleService : Service() {
+@@ -92,15 +270,34 @@ class FloatingBubbleService : Service() {
      override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
          intent?.let {
              bubbleSizeDp    = it.getIntExtra(EXTRA_SIZE,              60)
@@ -518,17 +523,14 @@ index 856d4d7..2cd9b3e 100644
              initialX        = it.getIntExtra(EXTRA_INITIAL_X,         0)
              initialY        = it.getIntExtra(EXTRA_INITIAL_Y,         100)
 +            bubbleOpacity   = it.getDoubleExtra(EXTRA_OPACITY,        1.0).toFloat().coerceIn(0.25f, 1f)
++        }
++
++        if (bubbleView != null) {
++            return START_STICKY
          }
  
 -        // Must call startForeground before doing UI work on API 26+
 -        startForeground(NOTIFICATION_ID, buildNotification())
-+        if (bubbleView != null) {
-+            // Already showing — a fresh trigger (e.g. re-focusing a text field) counts as
-+            // interaction, so restart the idle countdown if it's just sitting idle.
-+            if (bubbleMode == BubbleMode.IDLE) scheduleIdleTimeout()
-+            return START_STICKY
-+        }
-+
 +        // The idle bubble is an overlay service. It must not claim the
 +        // microphone foreground-service type until the user starts dictation.
 +        try {
@@ -548,7 +550,7 @@ index 856d4d7..2cd9b3e 100644
          setupBubble()
  
          return START_STICKY
-@@ -108,6 +300,8 @@ class FloatingBubbleService : Service() {
+@@ -108,6 +305,8 @@ class FloatingBubbleService : Service() {
  
      override fun onDestroy() {
          super.onDestroy()
@@ -557,7 +559,7 @@ index 856d4d7..2cd9b3e 100644
          removeBubble()
      }
  
-@@ -118,13 +312,91 @@ class FloatingBubbleService : Service() {
+@@ -118,13 +317,107 @@ class FloatingBubbleService : Service() {
      private fun setupBubble() {
          windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
  
@@ -575,17 +577,32 @@ index 856d4d7..2cd9b3e 100644
 +            alpha = bubbleOpacity
 +            isSoundEffectsEnabled = false
 +            isHapticFeedbackEnabled = false
-         }
- 
--        bubbleView!!.setImageBitmap(resolveIcon(sizePx))
++        }
++
 +        // --- Idle: squircle with a static waveform-bars glyph ---
 +        idleWaveform = WaveformView(this, barCount = 5, barColor = Color.parseColor(COLOR_CHARCOAL)).apply {
 +            setStaticLevels(0.45f, 0.75f, 1.0f, 0.7f, 0.4f)
 +        }
++        // The bundled Mutter "mt" mark when the app passed one in, else the waveform glyph.
++        val logo = iconBase64?.let { encoded ->
++            try {
++                val bytes = Base64.decode(encoded, Base64.DEFAULT)
++                BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
++            } catch (_: Exception) { null }
++        }
 +        idleContainer = FrameLayout(this).apply {
 +            background = squircleBackground()
 +            elevation = 4f
-+            addView(idleWaveform, FrameLayout.LayoutParams(dp2px(28), dp2px(20), Gravity.CENTER))
++            if (logo != null) {
++                val logoView = ImageView(this@FloatingBubbleService).apply {
++                    setImageBitmap(logo)
++                    scaleType = ImageView.ScaleType.FIT_CENTER
++                    setColorFilter(Color.parseColor(COLOR_CHARCOAL), PorterDuff.Mode.SRC_IN)
++                }
++                addView(logoView, FrameLayout.LayoutParams(dp2px(28), dp2px(16), Gravity.CENTER))
++            } else {
++                addView(idleWaveform, FrameLayout.LayoutParams(dp2px(22), dp2px(16), Gravity.CENTER))
++            }
 +        }
 +        bubbleView!!.addView(idleContainer, FrameLayout.LayoutParams(idleSizePx, idleSizePx, Gravity.CENTER))
 +
@@ -593,7 +610,7 @@ index 856d4d7..2cd9b3e 100644
 +        val cancelGlyph = TextView(this).apply {
 +            text = "\u2715"
 +            setTextColor(Color.parseColor(COLOR_CHARCOAL))
-+            textSize = 18f
++            textSize = 15f
 +            gravity = Gravity.CENTER
 +            isSoundEffectsEnabled = false
 +        }
@@ -606,7 +623,7 @@ index 856d4d7..2cd9b3e 100644
 +        waveformView = WaveformView(this, barCount = 9, barColor = Color.parseColor(COLOR_CHARCOAL))
 +        stateLabel = TextView(this).apply {
 +            setTextColor(Color.parseColor(COLOR_CHARCOAL))
-+            textSize = 13f
++            textSize = 12f
 +            typeface = Typeface.DEFAULT
 +            gravity = Gravity.CENTER
 +            maxLines = 1
@@ -621,14 +638,15 @@ index 856d4d7..2cd9b3e 100644
 +            elevation = 4f
 +            clipChildren = true
 +            clipToOutline = true
-+            addView(waveformView, FrameLayout.LayoutParams(dp2px(PILL_WIDTH_DP - 24), dp2px(30), Gravity.CENTER))
++            addView(waveformView, FrameLayout.LayoutParams(dp2px(PILL_WIDTH_DP - 20), dp2px(24), Gravity.CENTER))
 +            addView(stateLabel, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-+        }
-+
+         }
+ 
+-        bubbleView!!.setImageBitmap(resolveIcon(sizePx))
 +        val finishGlyph = TextView(this).apply {
 +            text = "\u2713"
 +            setTextColor(Color.WHITE)
-+            textSize = 22f
++            textSize = 19f
 +            gravity = Gravity.CENTER
 +            isSoundEffectsEnabled = false
 +        }
@@ -654,7 +672,7 @@ index 856d4d7..2cd9b3e 100644
  
          val windowType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
              WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-@@ -132,8 +404,8 @@ class FloatingBubbleService : Service() {
+@@ -132,8 +425,8 @@ class FloatingBubbleService : Service() {
              @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE
  
          params = WindowManager.LayoutParams(
@@ -665,11 +683,15 @@ index 856d4d7..2cd9b3e 100644
              windowType,
              WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                      WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
-@@ -143,96 +415,546 @@ class FloatingBubbleService : Service() {
+@@ -143,96 +436,551 @@ class FloatingBubbleService : Service() {
              x = initialX
              y = initialY
          }
-+        anchoredToLeft = initialX < resources.displayMetrics.widthPixels / 2
++        // Start docked flush to whichever edge it's nearer (the app defaults to the right).
++        val screenWidth = resources.displayMetrics.widthPixels
++        anchoredToLeft = initialX < screenWidth / 2
++        params!!.x = if (anchoredToLeft) 0 else (screenWidth - idleSizePx).coerceAtLeast(0)
++        hiddenByTimeout = false
  
 +        setIdleAppearance(idleSizePx)
          windowManager!!.addView(bubbleView, params)
@@ -740,6 +762,7 @@ index 856d4d7..2cd9b3e 100644
 +        cancelIdleTimeout()
 +        val runnable = Runnable {
 +            Log.d(debugTag, "idle timeout reached with no interaction, stopping bubble")
++            hiddenByTimeout = true
 +            stopSelf()
 +        }
 +        idleTimeoutRunnable = runnable
@@ -1006,11 +1029,11 @@ index 856d4d7..2cd9b3e 100644
 +        streamSocket = streamHttpClient.newWebSocket(request, object : WebSocketListener() {
 +            override fun onOpen(webSocket: WebSocket, response: Response) {
 +                beginAudioCapture(webSocket)
-+            }
+             }
 +
 +            override fun onMessage(webSocket: WebSocket, text: String) {
 +                handleStreamMessage(text)
-             }
++            }
 +
 +            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
 +                Log.e(debugTag, "stream failure", t)
@@ -1041,12 +1064,9 @@ index 856d4d7..2cd9b3e 100644
 +            Log.e(debugTag, "AudioRecord.getMinBufferSize failed: $minBufferSize")
 +            mainHandler.post { handleStreamFailure("Mic error") }
 +            return
-         }
++        }
 +        val bufferSize = minBufferSize * 2
- 
--        // 2. App launcher icon
--        if (useLauncherIcon) {
--            getLauncherIconBitmap(sizePx)?.let { return clipToCircle(it) }
++
 +        val record = try {
 +            AudioRecord(
 +                android.media.MediaRecorder.AudioSource.MIC,
@@ -1061,15 +1081,18 @@ index 856d4d7..2cd9b3e 100644
 +            return
          }
  
--        // 3. Coloured circle fallback
--        return buildColoredCircle(sizePx, bubbleColor)
+-        // 2. App launcher icon
+-        if (useLauncherIcon) {
+-            getLauncherIconBitmap(sizePx)?.let { return clipToCircle(it) }
 +        if (record.state != AudioRecord.STATE_INITIALIZED) {
 +            Log.e(debugTag, "AudioRecord not initialized")
 +            record.release()
 +            mainHandler.post { handleStreamFailure("Mic error") }
 +            return
-+        }
-+
+         }
+ 
+-        // 3. Coloured circle fallback
+-        return buildColoredCircle(sizePx, bubbleColor)
 +        audioRecord = record
 +        isRecording = true
 +        record.startRecording()
@@ -1173,7 +1196,8 @@ index 856d4d7..2cd9b3e 100644
 +        val json = try { JSONObject(text) } catch (error: Exception) {
 +            Log.e(debugTag, "unparseable stream message: $text", error)
 +            return
-+        }
+         }
+-        canvas.drawBitmap(src, 0f, 0f, imagePaint)
 +        when (json.optString("type")) {
 +            "result" -> {
 +                streamResultReceived = true
@@ -1201,8 +1225,7 @@ index 856d4d7..2cd9b3e 100644
 +                Log.e(debugTag, "stream error: $message")
 +                mainHandler.post { handleStreamFailure(message) }
 +            }
-         }
--        canvas.drawBitmap(src, 0f, 0f, imagePaint)
++        }
 +    }
  
 -        return output
@@ -1270,7 +1293,7 @@ index 856d4d7..2cd9b3e 100644
  
      private fun attachTouchListener() {
          var downParamsX = 0
-@@ -240,34 +962,94 @@ class FloatingBubbleService : Service() {
+@@ -240,34 +988,94 @@ class FloatingBubbleService : Service() {
          var downRawX    = 0f
          var downRawY    = 0f
          var isDragging  = false
@@ -1370,7 +1393,7 @@ index 856d4d7..2cd9b3e 100644
                      true
                  }
  
-@@ -276,22 +1058,44 @@ class FloatingBubbleService : Service() {
+@@ -276,22 +1084,46 @@ class FloatingBubbleService : Service() {
          }
      }
  
@@ -1399,6 +1422,8 @@ index 856d4d7..2cd9b3e 100644
 -        ValueAnimator.ofInt(currentX, targetX).apply {
 -            duration     = 350L
 -            interpolator = OvershootInterpolator(1.2f)
++        // Moving the bubble counts as using it.
++        if (bubbleMode == BubbleMode.IDLE) scheduleIdleTimeout()
 +        val screenWidth  = resources.displayMetrics.widthPixels
 +        val screenHeight = resources.displayMetrics.heightPixels
 +        val currentX     = params?.x ?: 0
@@ -1425,7 +1450,7 @@ index 856d4d7..2cd9b3e 100644
                  safeUpdateLayout()
              }
              start()
-@@ -304,22 +1108,6 @@ class FloatingBubbleService : Service() {
+@@ -304,22 +1136,6 @@ class FloatingBubbleService : Service() {
          } catch (_: Exception) { /* view already removed */ }
      }
  
@@ -1448,7 +1473,7 @@ index 856d4d7..2cd9b3e 100644
      // -------------------------------------------------------------------------
      // Notification (required for foreground service)
      // -------------------------------------------------------------------------
-@@ -360,46 +1148,131 @@ class FloatingBubbleService : Service() {
+@@ -360,46 +1176,131 @@ class FloatingBubbleService : Service() {
      // Generic helpers
      // -------------------------------------------------------------------------
  
