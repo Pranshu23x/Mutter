@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { StatusBar } from "expo-status-bar";
-import { Animated, Linking, SafeAreaView, StyleSheet, Text, View } from "react-native";
+import { Animated, AppState, Linking, SafeAreaView, StyleSheet, Text, View } from "react-native";
 import { SoftTouchableOpacity } from "../App";
 import SettingsGuide from "./SettingsGuide";
 
@@ -23,7 +23,6 @@ const STEPS = [
         : "Tap “While using the app”.",
     cta: (p, tried) => (tried && p.microphonePermissionState === "denied" ? "Open microphone settings" : "Allow microphone"),
     isGranted: (p) => p.microphonePermissionState === "granted",
-    isPending: (p) => p.microphonePermissionState === "requesting",
     onAllow: (p) => p.onEnableMicrophone(),
   },
   {
@@ -34,7 +33,6 @@ const STEPS = [
     hint: () => "Find Mutter in the list and switch it on, then come back.",
     cta: () => "Open settings",
     isGranted: (p) => p.bubblePermissionState === "granted",
-    isPending: () => false,
     onAllow: (p) => p.onEnableOverlay(),
   },
   {
@@ -45,20 +43,24 @@ const STEPS = [
     hint: () => "Open Downloaded apps (or Installed apps) › Mutter, switch on Use Mutter, tap Allow.",
     cta: () => "Open settings",
     isGranted: (p) => p.bubbleTextInputPermissionState === "granted",
-    isPending: () => false,
     onAllow: (p) => p.onEnableTextInput(),
   },
 ];
 
 export default function PermissionOnboardingScreen(props) {
-  const [stepIndex, setStepIndex] = useState(0);
-  const [displayedIndex, setDisplayedIndex] = useState(0);
+  // Start at the first permission that's still off (e.g. reopened from Home after a
+  // skip, or after Android revoked one), not always at the microphone.
+  const [initialIndex] = useState(() => {
+    const index = STEPS.findIndex((candidate) => !candidate.isGranted(props));
+    return index === -1 ? 0 : index;
+  });
+  const [stepIndex, setStepIndex] = useState(initialIndex);
+  const [displayedIndex, setDisplayedIndex] = useState(initialIndex);
   const [triedSteps, setTriedSteps] = useState({});
   const [showUnlock, setShowUnlock] = useState(false);
   const step = STEPS[displayedIndex];
   const tried = Boolean(triedSteps[step.key]);
   const granted = step.isGranted(props);
-  const pending = step.isPending(props);
   const isLastStep = displayedIndex === STEPS.length - 1;
   // Sideloaded installs on Android 13+ show "Restricted setting" on the accessibility
   // toggle until it's unlocked in App info; offer that once they've tried it.
@@ -95,6 +97,36 @@ export default function PermissionOnboardingScreen(props) {
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stepIndex]);
+
+  // Never trust that the user came back the "expected" way (they may grant it, give up,
+  // or just switch apps): re-read the real state the moment the app is foregrounded,
+  // again shortly after (some grants land a beat late), and quietly every 1.5s while
+  // this screen is open. The step then advances by itself, or offers to reopen.
+  const { onRecheck } = props;
+  useEffect(() => {
+    if (granted || !onRecheck) {
+      return undefined;
+    }
+    const recheck = () => onRecheck().catch?.(() => {});
+    let lateTimer;
+    const subscription = AppState.addEventListener("change", (state) => {
+      if (state === "active") {
+        recheck();
+        clearTimeout(lateTimer);
+        lateTimer = setTimeout(recheck, 700);
+      }
+    });
+    const interval = setInterval(() => {
+      if (AppState.currentState === "active") {
+        recheck();
+      }
+    }, 1500);
+    return () => {
+      subscription.remove();
+      clearInterval(interval);
+      clearTimeout(lateTimer);
+    };
+  }, [granted, onRecheck, displayedIndex]);
 
   useEffect(() => {
     if (!granted) {
@@ -150,14 +182,17 @@ export default function PermissionOnboardingScreen(props) {
               <SettingsGuide guide={guide} />
             </View>
             <Text style={styles.hint}>{hint}</Text>
+            {tried && !granted && (
+              <Text style={styles.notYet}>Not on yet. Tap below to open it again.</Text>
+            )}
 
             <SoftTouchableOpacity
               onPress={allow}
-              disabled={pending || granted}
-              style={[styles.primaryButton, (pending || granted) && styles.primaryButtonBusy]}
+              disabled={granted}
+              style={[styles.primaryButton, granted && styles.primaryButtonBusy]}
             >
               <Text style={styles.primaryButtonText}>
-                {granted ? "Allowed ✓" : pending ? "Waiting…" : step.cta(props, tried)}
+                {granted ? "Allowed ✓" : step.cta(props, tried)}
               </Text>
             </SoftTouchableOpacity>
 
@@ -243,6 +278,13 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 18,
     color: "rgba(255, 255, 255, 0.75)",
+    textAlign: "center",
+  },
+  notYet: {
+    marginTop: 10,
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#ffd9a8",
     textAlign: "center",
   },
   primaryButton: {

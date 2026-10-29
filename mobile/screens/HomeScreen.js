@@ -127,23 +127,11 @@ export default function HomeScreen({
           )}
         </ScrollView>
 
+        {/* "Finish setup" reopens the step-by-step flow at whichever permission is still off. */}
         {!bubbleVisible && !permissionsReady && !stillChecking && (
           <HomeBannerCard
             body={bannerBody}
-            buttonLabel={
-              bubbleBusy
-                ? "Opening settings..."
-                : needsMicrophone
-                  ? "Enable microphone"
-                  : needsOverlay && bubblePermissionState === "denied"
-                  ? "Try again"
-                  : needsTextInput && bubbleTextInputPermissionState === "requesting"
-                    ? "Open text input settings"
-                    : needsTextInput
-                      ? "Allow text input access"
-                      : "Allow overlay"
-            }
-            buttonDisabled={bubbleBusy}
+            buttonLabel="Finish setup"
             onPress={needsMicrophone ? onEnableMicrophone : onEnableBubble}
           />
         )}

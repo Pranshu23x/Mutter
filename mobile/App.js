@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import ReanimatedAnimated, { FadeIn, FadeOut } from "react-native-reanimated";
 import {
@@ -335,22 +335,11 @@ function AppShell() {
   }, [bubble.configureVoiceSession, token, voicePersona]);
 
   const profileLetter = (email || "M").trim().charAt(0).toUpperCase() || "M";
-  const handleEnableBubble = async () => {
-    // A stale service state must not prevent the user from reopening Android
-    // settings after the overlay permission was revoked.
-    if (bubble.isBusy) {
-      return;
-    }
-
-    try {
-      const granted = await bubble.enable();
-      if (!granted) {
-        await bubble.refreshPermission();
-      }
-    } catch {
-      // Ignore failed overlay launches; the banner stays available for retry.
-      await bubble.refreshPermission().catch(() => {});
-    }
+  // The Home banner reopens the same step-by-step flow (at the first permission still
+  // missing) rather than firing every Settings page back to back.
+  const handleEnableBubble = () => {
+    setPermissionOnboardingDismissedThisSession(false);
+    setOnboardingVisible(true);
   };
 
   const handleEnableOverlayOnly = async () => {
@@ -379,6 +368,22 @@ function AppShell() {
       await bubble.refreshTextInputPermission().catch(() => {});
     }
   };
+
+  // Re-reads all three permissions from the system. The onboarding screen calls this
+  // whenever the app comes back to the foreground (and periodically while it's open),
+  // so a grant made in Settings, or a prompt abandoned by backgrounding the app, is
+  // always reflected instead of leaving a step stuck.
+  const recheckPermissions = useCallback(async () => {
+    if (Platform.OS !== "android") {
+      return;
+    }
+    const [micGranted] = await Promise.all([
+      PermissionsAndroid.check(PermissionsAndroid.PERMISSIONS.RECORD_AUDIO).catch(() => false),
+      bubble.refreshPermission().catch(() => false),
+      bubble.refreshTextInputPermission().catch(() => false),
+    ]);
+    setMicrophonePermissionState(micGranted ? "granted" : "denied");
+  }, [bubble.refreshPermission, bubble.refreshTextInputPermission]);
 
   const handleEnableMicrophone = async () => {
     if (Platform.OS !== "android") {
@@ -545,6 +550,7 @@ function AppShell() {
           bubbleTextInputPermissionState={bubble.textInputPermissionState}
           bubbleBusy={bubble.isBusy}
           needsRestrictedUnlock={bubble.needsRestrictedUnlock}
+          onRecheck={recheckPermissions}
           onEnableOverlay={handleEnableOverlayOnly}
           onEnableTextInput={handleEnableTextInputOnly}
           onDone={async () => {
@@ -602,7 +608,7 @@ function AppShell() {
                     voicePersona={voicePersona}
                     profileLetter={profileLetter}
                     onEnableBubble={handleEnableBubble}
-                    onEnableMicrophone={handleEnableMicrophone}
+                    onEnableMicrophone={handleEnableBubble}
                     bubbleEnabled={bubble.enabled}
                     bubblePermissionState={bubble.permissionState}
                     bubbleTextInputPermissionState={bubble.textInputPermissionState}

@@ -104,7 +104,7 @@ index 0000000..106ee1c
 +    }
 +}
 diff --git a/node_modules/@increase21/rn-floating-bubble/android/src/main/java/com/rnfloatingbubble/FloatingBubbleModule.kt b/node_modules/@increase21/rn-floating-bubble/android/src/main/java/com/rnfloatingbubble/FloatingBubbleModule.kt
-index 39c15a4..c0bf1f9 100644
+index 39c15a4..6bb35c5 100644
 --- a/node_modules/@increase21/rn-floating-bubble/android/src/main/java/com/rnfloatingbubble/FloatingBubbleModule.kt
 +++ b/node_modules/@increase21/rn-floating-bubble/android/src/main/java/com/rnfloatingbubble/FloatingBubbleModule.kt
 @@ -1,10 +1,12 @@
@@ -217,7 +217,15 @@ index 39c15a4..c0bf1f9 100644
      /**
       * Opens the system "Display over other apps" settings page.
       *
-@@ -120,8 +184,9 @@ class FloatingBubbleModule(
+@@ -114,14 +178,17 @@ class FloatingBubbleModule(
+         }
+ 
+         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
++            // A second tap before returning must not orphan the first caller's promise.
++            pendingPermissionPromise?.resolve(false)
+             pendingPermissionPromise = promise
+             val intent = Intent(
+                 Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
                  Uri.parse("package:${reactContext.packageName}")
              ).apply {
                  addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -228,7 +236,7 @@ index 39c15a4..c0bf1f9 100644
                  ?: run {
                      pendingPermissionPromise = null
                      promise.reject("NO_ACTIVITY", "No current activity found.")
-@@ -150,16 +215,59 @@ class FloatingBubbleModule(
+@@ -150,16 +217,59 @@ class FloatingBubbleModule(
          reactContext.removeLifecycleEventListener(this)
      }
  
