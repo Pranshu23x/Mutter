@@ -1695,10 +1695,10 @@ index 856d4d7..f805aa3 100644
  }
 diff --git a/node_modules/@increase21/rn-floating-bubble/android/src/main/java/com/rnfloatingbubble/MutterTextInputAccessibilityService.kt b/node_modules/@increase21/rn-floating-bubble/android/src/main/java/com/rnfloatingbubble/MutterTextInputAccessibilityService.kt
 new file mode 100644
-index 0000000..60c75f2
+index 0000000..e23437a
 --- /dev/null
 +++ b/node_modules/@increase21/rn-floating-bubble/android/src/main/java/com/rnfloatingbubble/MutterTextInputAccessibilityService.kt
-@@ -0,0 +1,123 @@
+@@ -0,0 +1,150 @@
 +package com.rnfloatingbubble
 +
 +import android.accessibilityservice.AccessibilityService
@@ -1733,23 +1733,50 @@ index 0000000..60c75f2
 +    }
 +
 +    /**
-+     * Sets the translated text into the currently focused editable field.
++     * Inserts the translated text into the focused editable field at the cursor (or in
++     * place of the selected text), keeping whatever was already typed. Android only
++     * offers "set the whole text", so the new full text is built here: existing text
++     * before the cursor + a joining space if needed + dictation + text after the cursor.
 +     * Retries for a short window because the active window/node may not be
 +     * resolvable the instant the translation broadcast arrives.
 +     */
 +    private fun insertTextIntoFocusedField(text: String) {
-+        val arguments = Bundle().apply {
-+            putCharSequence(
-+                AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
-+                text
-+            )
-+        }
-+
 +        fun tryInsert(): Boolean {
 +            val node = rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
 +                ?: return false
 +            return try {
-+                node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)
++                // An empty field reports its placeholder ("Message") as its text.
++                val showingHint = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && node.isShowingHintText
++                val existing = if (showingHint) "" else node.text?.toString().orEmpty()
++                var start = node.textSelectionStart
++                var end = node.textSelectionEnd
++                // No known cursor (-1) or one outside the text: append at the end.
++                if (start < 0 || end < 0 || start > existing.length || end > existing.length) {
++                    start = existing.length
++                    end = existing.length
++                }
++                if (start > end) start = end.also { end = start }
++
++                val before = existing.substring(0, start)
++                val after = existing.substring(end)
++                val leading = if (before.isNotEmpty() && !before.last().isWhitespace()) " " else ""
++                val trailing = if (after.isNotEmpty() && !after.first().isWhitespace()) " " else ""
++                val inserted = leading + text.trim() + trailing
++                val updated = before + inserted + after
++
++                val arguments = Bundle().apply {
++                    putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, updated)
++                }
++                val ok = node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)
++                if (ok) {
++                    // Leave the cursor right after the dictation so the next one continues there.
++                    val cursor = (before.length + inserted.length - trailing.length).coerceAtMost(updated.length)
++                    node.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, Bundle().apply {
++                        putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, cursor)
++                        putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, cursor)
++                    })
++                }
++                ok
 +            } catch (_: Exception) {
 +                false
 +            } finally {
