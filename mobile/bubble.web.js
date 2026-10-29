@@ -1,6 +1,9 @@
 export function useFloatingBubbleController() {
   return {
     enable: async () => false,
+    enableOverlay: async () => false,
+    requestTextInputPermission: async () => false,
+    activateBubble: async () => false,
     enabled: false,
     hide: async () => false,
     configureVoiceSession: async () => false,

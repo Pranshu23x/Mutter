@@ -1,13 +1,17 @@
 import { useEffect, useRef, useState } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import ReanimatedAnimated, { FadeIn, FadeOut } from "react-native-reanimated";
 import {
   ActivityIndicator,
   Animated,
   Dimensions,
   Easing,
+  ImageBackground,
   Modal,
   PermissionsAndroid,
   Platform,
+  SafeAreaView,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -32,20 +36,58 @@ import AccountRoute from "./screens/AccountScreen";
 import ProfileRoute from "./screens/ProfileScreen";
 import PersonalizationRoute from "./screens/PersonalizationScreen";
 import AuthScreen from "./screens/AuthScreen";
+import PermissionOnboardingScreen from "./screens/PermissionOnboardingScreen";
 import { AuthProvider, useAuth } from "./auth/AuthContext";
+import { PlanProvider, usePlan } from "./auth/PlanContext";
+import { UsageProvider } from "./auth/UsageContext";
 import BrandMark from "./components/BrandMark";
-import * as WebBrowser from "expo-web-browser";
+import { StatusBar } from "expo-status-bar";
+import {
+  WhatsAppGlyph,
+  MessengerGlyph,
+  TelegramGlyph,
+  TeamsGlyph,
+  OutlookGlyph,
+  OpenAIGlyph,
+  DocsGlyph,
+  SlackGlyph,
+  GmailGlyph,
+  MessageGlyph,
+  MailGlyph,
+  NotesGlyph,
+} from "./components/AppGlyphs";
 
 export { BrandMark };
 
 export const SCREEN_WIDTH = Dimensions.get("window").width;
 export const DRAWER_WIDTH = Math.min(336, Math.round(SCREEN_WIDTH * 0.84));
-const MICROPHONE_PERMISSION_REQUESTED_KEY = "@mutter/microphone-permission-requested";
 const VOICE_PERSONA_KEY = "@mutter/voice-persona";
+const WELCOME_SEEN_KEY = "@mutter/welcome-seen";
+const PERMISSION_ONBOARDING_DONE_KEY = "@mutter/permission-onboarding-done";
 const AnimatedTouchableOpacity = Animated.createAnimatedComponent(TouchableOpacity);
 const RootStack = createNativeStackNavigator();
 const Tab = createBottomTabNavigator();
 const navigationRef = createNavigationContainerRef();
+
+// Real mixed-language-in / English-out examples, tagged by persona — leads the Welcome
+// screen so new users see what the app actually does before being asked to sign up.
+const WELCOME_EXAMPLES = [
+  {
+    tag: "Work",
+    input: "कल का report ready है, but एक बार check कर लेना please।",
+    output: "The report for tomorrow is ready. Please review it once.",
+  },
+  {
+    tag: "Personal",
+    input: "ଆଜି थोड़ा देर ହେବ, traffic बहुत ज्यादा ଅଛି।",
+    output: "I'll be a little late today, the traffic is really heavy.",
+  },
+  {
+    tag: "Email",
+    input: "मला उद्या थोडं लवकर निघावं लागेल, so can we move the meeting?",
+    output: "I need to leave early tomorrow. Could we move the meeting?",
+  },
+];
 
 export const STYLE_TABS = [
   {
@@ -112,7 +154,7 @@ function NavigatorTabBar({ state, navigation }) {
   return (
     <BottomNav
       active={activeRoute}
-      theme="light"
+      theme="dark"
       onHomePress={() => navigation.navigate(SCREENS.HOME)}
       onStylePress={() => navigation.navigate(SCREENS.STYLE)}
     />
@@ -123,6 +165,7 @@ function MainTabs({
   onOpenProfile,
   onStartPersonalization,
   onPersonaChange,
+  voicePersona,
   profileLetter,
   onEnableBubble,
   onEnableMicrophone,
@@ -160,6 +203,7 @@ function MainTabs({
             onOpenProfile={onOpenProfile}
             onStartPersonalization={onStartPersonalization}
             onPersonaChange={onPersonaChange}
+            voicePersona={voicePersona}
             profileLetter={profileLetter}
           />
         )}
@@ -168,31 +212,106 @@ function MainTabs({
   );
 }
 
+// Shared background for every pre-app screen (loading spinners, config-missing, auth,
+// permission onboarding, welcome) so the whole first-run flow reads as one continuous
+// experience instead of flashing between different solid colors screen to screen.
+export function InitialFlowBackground({ children, white = false }) {
+  return (
+    <ReanimatedAnimated.View
+      style={{ flex: 1 }}
+      entering={FadeIn.duration(280)}
+      exiting={FadeOut.duration(180)}
+    >
+      {white ? (
+        <View style={{ flex: 1, backgroundColor: "#ffffff" }}>{children}</View>
+      ) : (
+        <ImageBackground
+          source={require("./assets/welcome-background.jpg")}
+          style={{ flex: 1 }}
+          resizeMode="cover"
+        >
+          {children}
+        </ImageBackground>
+      )}
+    </ReanimatedAnimated.View>
+  );
+}
+
 export default function App() {
   return (
     <AuthProvider>
-      <AppShell />
+      <PlanProvider>
+        <UsageProvider>
+          <AppShell />
+        </UsageProvider>
+      </PlanProvider>
     </AuthProvider>
   );
 }
 
 function AppShell() {
-  const { token, email, signOut, loading } = useAuth();
+  const { token, email, signOut, loading, isSupabaseConfigured } = useAuth();
+  const { planLabel, startCheckout } = usePlan();
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const [plan, setPlan] = useState({ plan: "free", status: null });
   const [voicePersona, setVoicePersona] = useState("Personal");
   const [microphonePermissionState, setMicrophonePermissionState] = useState("checking");
   const bubble = useFloatingBubbleController();
-  const startupPermissionsRequested = useRef(false);
+  const [welcomeVisible, setWelcomeVisible] = useState(false);
+  const [welcomeReady, setWelcomeReady] = useState(false);
+  const [onboardingVisible, setOnboardingVisible] = useState(false);
+  const [onboardingReady, setOnboardingReady] = useState(false);
+  const [permissionOnboardingDismissedThisSession, setPermissionOnboardingDismissedThisSession] =
+    useState(false);
+
+  // Welcome is a one-time marketing/onboarding screen shown before auth, not gated on
+  // being logged in — it should only ever appear once per install, regardless of
+  // whether the user later logs out and back in.
+  useEffect(() => {
+    let mounted = true;
+    AsyncStorage.getItem(WELCOME_SEEN_KEY)
+      .then((seen) => {
+        if (mounted) {
+          setWelcomeVisible(seen !== "true");
+          setWelcomeReady(true);
+        }
+      })
+      .catch(() => {
+        if (mounted) {
+          setWelcomeVisible(true);
+          setWelcomeReady(true);
+        }
+      });
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   useEffect(() => {
-    if (!token) return;
-    fetch(`${API_BASE_URL}/api/payments/subs`, {
-      headers: { Authorization: `Bearer ${token}` },
-    })
-      .then((res) => res.json().catch(() => ({})))
-      .then(setPlan)
-      .catch(() => {});
+    if (!token) {
+      setOnboardingVisible(false);
+      setOnboardingReady(false);
+      return undefined;
+    }
+
+    let mounted = true;
+    AsyncStorage.getItem(PERMISSION_ONBOARDING_DONE_KEY)
+      .then((done) => {
+        if (mounted) {
+          setOnboardingVisible(done !== "true");
+          setOnboardingReady(true);
+        }
+      })
+      .catch(() => {
+        if (mounted) {
+          setOnboardingVisible(true);
+          setOnboardingReady(true);
+        }
+      });
+
+    return () => {
+      mounted = false;
+    };
   }, [token]);
 
   useEffect(() => {
@@ -213,32 +332,7 @@ function AppShell() {
     bubble.configureVoiceSession(API_BASE_URL, token, voicePersona).catch(() => {});
   }, [bubble.configureVoiceSession, token, voicePersona]);
 
-  const planLabel =
-    plan.plan === "pro" && plan.status === "active"
-      ? "Pro"
-      : plan.status === "authenticated"
-        ? "Payment confirmed"
-        : "Free";
   const profileLetter = (email || "M").trim().charAt(0).toUpperCase() || "M";
-  const startCheckout = async (cycle) => {
-    const res = await fetch(`${API_BASE_URL}/api/payments/create-subs`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({ billing_cycle: cycle }),
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      throw new Error(data.error || data.message || "Failed to start subscription");
-    }
-
-    const url = `${API_BASE_URL}/checkout.html?subscription_id=${data.subscription_id}&key=${data.razorpay_key_id}&email=${encodeURIComponent(
-      email || ""
-    )}&cycle=${cycle}`;
-    await WebBrowser.openBrowserAsync(url);
-  };
   const handleEnableBubble = async () => {
     // A stale service state must not prevent the user from reopening Android
     // settings after the overlay permission was revoked.
@@ -254,6 +348,33 @@ function AppShell() {
     } catch {
       // Ignore failed overlay launches; the banner stays available for retry.
       await bubble.refreshPermission().catch(() => {});
+    }
+  };
+
+  const handleEnableOverlayOnly = async () => {
+    if (bubble.isBusy) {
+      return;
+    }
+
+    try {
+      const granted = await bubble.enableOverlay();
+      if (!granted) {
+        await bubble.refreshPermission();
+      }
+    } catch {
+      await bubble.refreshPermission().catch(() => {});
+    }
+  };
+
+  const handleEnableTextInputOnly = async () => {
+    if (bubble.isBusy) {
+      return;
+    }
+
+    try {
+      await bubble.requestTextInputPermission();
+    } catch {
+      await bubble.refreshTextInputPermission().catch(() => {});
     }
   };
 
@@ -281,75 +402,142 @@ function AppShell() {
     }
   };
 
+  // Permissions are no longer requested automatically here — each one is now asked for
+  // explicitly, one at a time with context, via PermissionOnboardingScreen (first login)
+  // or HomeBannerCard (if skipped/revoked later). This effect only ever *checks* current
+  // state on login so the UI reflects reality — it never triggers a native prompt.
   useEffect(() => {
-    if (!token || loading || startupPermissionsRequested.current) {
+    if (!token || loading || Platform.OS !== "android") {
       return;
     }
 
-    startupPermissionsRequested.current = true;
-    let active = true;
-
-    (async () => {
-      if (Platform.OS === "android") {
-        const hasMicrophonePermission = await PermissionsAndroid.check(
-          PermissionsAndroid.PERMISSIONS.RECORD_AUDIO
-        );
-        const microphonePromptWasShown = await AsyncStorage.getItem(
-          MICROPHONE_PERMISSION_REQUESTED_KEY
-        );
-
-        if (hasMicrophonePermission) {
-          setMicrophonePermissionState("granted");
-        } else if (microphonePromptWasShown === "true") {
-          setMicrophonePermissionState("denied");
-        } else {
-          setMicrophonePermissionState("requesting");
-          await AsyncStorage.setItem(MICROPHONE_PERMISSION_REQUESTED_KEY, "true");
-          const result = await PermissionsAndroid.request(
-            PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
-            {
-              title: "Microphone access",
-              message: "Mutter needs microphone access to turn your speech into English.",
-              buttonPositive: "Allow microphone",
-              buttonNegative: "Not now",
-            }
-          );
-          setMicrophonePermissionState(
-            result === PermissionsAndroid.RESULTS.GRANTED ? "granted" : "denied"
-          );
-        }
+    let mounted = true;
+    PermissionsAndroid.check(PermissionsAndroid.PERMISSIONS.RECORD_AUDIO).then((granted) => {
+      if (mounted) {
+        setMicrophonePermissionState(granted ? "granted" : "denied");
       }
-
-      if (!active) {
-        return;
-      }
-
-      try {
-        await bubble.enable();
-      } catch {
-        await bubble.refreshPermission().catch(() => {});
-      }
-    })();
+    });
 
     return () => {
-      active = false;
+      mounted = false;
     };
-  }, [bubble.enable, bubble.refreshPermission, loading, token]);
+  }, [loading, token]);
+
+  if (!isSupabaseConfigured) {
+    return <ConfigMissingScreen />;
+  }
 
   if (loading) {
     return (
       <GestureHandlerRootView style={{ flex: 1 }}>
         <SafeAreaProvider>
-          <View style={{ flex: 1, backgroundColor: "#f3ecdc", alignItems: "center", justifyContent: "center" }}>
-            <ActivityIndicator size="large" color="#111111" />
-          </View>
+          <InitialFlowBackground>
+            <View style={styles.welcomeLoading}>
+              <ActivityIndicator size="large" color="#ffffff" />
+            </View>
+          </InitialFlowBackground>
         </SafeAreaProvider>
       </GestureHandlerRootView>
     );
   }
 
+  if (!welcomeReady) {
+    return (
+      <GestureHandlerRootView style={{ flex: 1 }}>
+        <SafeAreaProvider>
+          <InitialFlowBackground>
+            <View style={styles.welcomeLoading}>
+              <ActivityIndicator size="large" color="#ffffff" />
+            </View>
+          </InitialFlowBackground>
+        </SafeAreaProvider>
+      </GestureHandlerRootView>
+    );
+  }
+
+  if (welcomeVisible) {
+    return (
+      <WelcomeScreen
+        onGetStarted={async () => {
+          await AsyncStorage.setItem(WELCOME_SEEN_KEY, "true");
+          setWelcomeVisible(false);
+        }}
+      />
+    );
+  }
+
   if (!token) {
-    return <AuthScreen />;
+    // AuthScreen renders a SafeAreaView from react-native-safe-area-context, which
+    // requires a SafeAreaProvider ancestor to supply insets — without this wrapper it
+    // throws ("No safe area value available") instead of rendering the login screen.
+    return (
+      <GestureHandlerRootView style={{ flex: 1 }}>
+        <SafeAreaProvider>
+          <InitialFlowBackground>
+            <AuthScreen />
+          </InitialFlowBackground>
+        </SafeAreaProvider>
+      </GestureHandlerRootView>
+    );
+  }
+
+  if (!onboardingReady) {
+    return (
+      <GestureHandlerRootView style={{ flex: 1 }}>
+        <SafeAreaProvider>
+          <InitialFlowBackground>
+            <View style={styles.welcomeLoading}>
+              <ActivityIndicator size="large" color="#ffffff" />
+            </View>
+          </InitialFlowBackground>
+        </SafeAreaProvider>
+      </GestureHandlerRootView>
+    );
+  }
+
+  // Beyond the one-time "seen onboarding before" flag, also re-show the step flow any
+  // time a raw permission is actually missing (e.g. Android auto-revoking overlay/
+  // accessibility on app reinstall/update) — not just on first-ever login. Deliberately
+  // ignores bubble.enabled (the manual on/off toggle): that's a separate concern
+  // HomeScreen's own banner already covers once all real permissions are granted.
+  const permissionsReady =
+    microphonePermissionState === "granted" &&
+    bubble.permissionState === "granted" &&
+    bubble.textInputPermissionState === "granted";
+  const permissionsStillChecking =
+    microphonePermissionState === "checking" ||
+    bubble.permissionState === "checking" ||
+    bubble.textInputPermissionState === "checking";
+  // Finishing/skipping the flow must not immediately re-trigger it just because a
+  // permission is still missing (e.g. skipped on the last step) — sessionDismissed
+  // resets on every fresh app open, so the step flow still greets you again next time
+  // something's missing, but never traps you mid-session the way a persisted flag would.
+  const showPermissionFlow =
+    !permissionOnboardingDismissedThisSession &&
+    (onboardingVisible || (!permissionsReady && !permissionsStillChecking));
+
+  if (showPermissionFlow) {
+    return (
+      <InitialFlowBackground>
+        <PermissionOnboardingScreen
+          microphonePermissionState={microphonePermissionState}
+          onEnableMicrophone={handleEnableMicrophone}
+          bubblePermissionState={bubble.permissionState}
+          bubbleTextInputPermissionState={bubble.textInputPermissionState}
+          bubbleBusy={bubble.isBusy}
+          onEnableOverlay={handleEnableOverlayOnly}
+          onEnableTextInput={handleEnableTextInputOnly}
+          onDone={async () => {
+            await AsyncStorage.setItem(PERMISSION_ONBOARDING_DONE_KEY, "true");
+            setOnboardingVisible(false);
+            setPermissionOnboardingDismissedThisSession(true);
+            // Only now — after the whole permission sequence is finished or skipped —
+            // does the bubble actually become visible, never mid-onboarding.
+            bubble.activateBubble().catch(() => {});
+          }}
+        />
+      </InitialFlowBackground>
+    );
   }
 
   const openDrawer = () => setDrawerOpen(true);
@@ -391,6 +579,7 @@ function AppShell() {
               setVoicePersona(persona);
               AsyncStorage.setItem(VOICE_PERSONA_KEY, persona).catch(() => {});
             }}
+                    voicePersona={voicePersona}
                     profileLetter={profileLetter}
                     onEnableBubble={handleEnableBubble}
                     onEnableMicrophone={handleEnableMicrophone}
@@ -426,10 +615,7 @@ function AppShell() {
               </RootStack.Screen>
               <RootStack.Screen name={SCREENS.ACCOUNT}>
                 {(props) => (
-                  <AccountRoute
-                    onBack={() => props.navigation.goBack()}
-                    onUpgrade={startCheckout}
-                  />
+                  <AccountRoute onBack={() => props.navigation.goBack()} />
                 )}
               </RootStack.Screen>
               <RootStack.Screen
@@ -456,6 +642,108 @@ function AppShell() {
 
       </SafeAreaProvider>
     </GestureHandlerRootView>
+  );
+}
+
+function ConfigMissingScreen() {
+  return (
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <SafeAreaProvider>
+        <InitialFlowBackground>
+          <SafeAreaView style={configMissingStyles.safe}>
+            <View style={configMissingStyles.card}>
+              <Text style={configMissingStyles.title}>Setup needed</Text>
+              <Text style={configMissingStyles.body}>
+                EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY aren't set, so
+                sign-in can't work yet. Create mobile/.env — see mobile/ENV_SETUP.md for the
+                values to fill in — then restart the app.
+              </Text>
+            </View>
+          </SafeAreaView>
+        </InitialFlowBackground>
+      </SafeAreaProvider>
+    </GestureHandlerRootView>
+  );
+}
+
+const configMissingStyles = StyleSheet.create({
+  safe: {
+    flex: 1,
+    backgroundColor: "transparent",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 24,
+  },
+  card: {
+    backgroundColor: "#ffffff",
+    borderRadius: 20,
+    padding: 24,
+    borderWidth: 1,
+    borderColor: "#eeeeee",
+  },
+  title: {
+    fontSize: 20,
+    fontWeight: "700",
+    color: "#111111",
+    marginBottom: 8,
+  },
+  body: {
+    fontSize: 14,
+    lineHeight: 21,
+    color: "#4d4d4d",
+  },
+});
+
+function WelcomeScreen({ onGetStarted }) {
+  return (
+    <InitialFlowBackground>
+      <SafeAreaView style={styles.welcomeSafeInner}>
+      <StatusBar style="light" />
+      <View style={styles.welcomeScreen}>
+        <ScrollView
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={styles.welcomeScrollContent}
+        >
+          <View style={styles.welcomeHeader}>
+            <View style={styles.welcomeLogoMark}>
+              <View style={styles.welcomeLogoBarShort} />
+              <View style={styles.welcomeLogoBarTall} />
+              <View style={styles.welcomeLogoBarMid} />
+              <View style={styles.welcomeLogoBarShort} />
+            </View>
+            <Text style={styles.welcomeLogoText}>Mutter</Text>
+          </View>
+
+          <Text style={styles.welcomeTitle}>Think in your language, type in English — 4x faster</Text>
+
+          {WELCOME_EXAMPLES.map((example) => (
+            <View key={example.tag + example.input} style={styles.welcomeExampleCard}>
+              <View style={styles.welcomeExampleTag}>
+                <Text style={styles.welcomeExampleTagText}>{example.tag}</Text>
+              </View>
+              <Text style={styles.welcomeExampleInput}>{example.input}</Text>
+              <Text style={styles.welcomeExampleOutput}>{example.output}</Text>
+            </View>
+          ))}
+
+          <Text style={styles.welcomeBody}>
+            Speak in Hindi, Tamil, Bengali, or any language you think in. Mutter turns it into clear English for every chat.
+          </Text>
+        </ScrollView>
+
+        <View style={styles.welcomeFooter}>
+          <View style={styles.welcomeDots}>
+            <View style={[styles.welcomeDot, styles.welcomeDotActive]} />
+            <View style={styles.welcomeDot} />
+            <View style={styles.welcomeDot} />
+          </View>
+          <SoftTouchableOpacity onPress={onGetStarted} style={styles.welcomeButton}>
+            <Text style={styles.welcomeButtonText}>Get started</Text>
+          </SoftTouchableOpacity>
+        </View>
+      </View>
+      </SafeAreaView>
+    </InitialFlowBackground>
   );
 }
 
@@ -588,13 +876,16 @@ export function SoftTouchableOpacity({
     }
   };
 
+  const flattenedStyle = StyleSheet.flatten(style) || {};
+  const baseTransform = Array.isArray(flattenedStyle.transform) ? flattenedStyle.transform : [];
+
   return (
     <AnimatedTouchableOpacity
       activeOpacity={1}
       onPress={onPress}
       onPressIn={handlePressIn}
       onPressOut={handlePressOut}
-      style={[style, { transform: [{ scale }], opacity }]}
+      style={[style, { transform: [...baseTransform, { scale }], opacity }]}
       {...rest}
     >
       {children}
@@ -771,6 +1062,8 @@ function DrawerSignOutGlyph() {
 }
 
 export function HomeBannerCard({
+  title = "Allow permissions",
+  body = "Allow overlay and text-input access so you can speak naturally and turn your thoughts into English in any chat.",
   buttonLabel = "Allow",
   buttonDisabled = false,
   onPress,
@@ -788,10 +1081,8 @@ export function HomeBannerCard({
 
   return (
     <Animated.View style={[styles.homeBannerCard, { transform: [{ translateX: slideX }] }]}>
-      <Text style={styles.homeBannerTitle}>Allow permissions</Text>
-      <Text style={styles.homeBannerBody}>
-        Allow overlay and text-input access so you can speak naturally and turn your thoughts into English in any chat.
-      </Text>
+      <Text style={styles.homeBannerTitle}>{title}</Text>
+      <Text style={styles.homeBannerBody}>{body}</Text>
       <SoftTouchableOpacity
         onPress={onPress}
         disabled={buttonDisabled}
@@ -936,12 +1227,12 @@ export function StyleCard({ eyebrow, title, subtitle, preview }) {
 
 export function BottomNav({ active, theme = "light", onHomePress, onStylePress }) {
   const darkTheme = theme === "dark";
-  const navBackground = darkTheme ? "#000000" : "#f3ecdc";
-  const navBorder = darkTheme ? "#111111" : "#ececec";
-  const labelColor = darkTheme ? "#f9f9f9" : "#6b6d75";
-  const activeLabelColor = darkTheme ? "#f9f9f9" : "#000000";
-  const inactiveIconColor = darkTheme ? "#f9f9f9" : "#4d4f58";
-  const activeSlotColor = darkTheme ? "rgba(249,249,249,0.12)" : "#e8e8e4";
+  const navBackground = darkTheme ? "rgba(255, 255, 255, 0.62)" : "#f3ecdc";
+  const navBorder = darkTheme ? "rgba(17, 17, 17, 0.08)" : "#ececec";
+  const labelColor = "#6b6d75";
+  const activeLabelColor = darkTheme ? "#25232a" : "#000000";
+  const inactiveIconColor = darkTheme ? "#6b6d75" : "#4d4f58";
+  const activeSlotColor = darkTheme ? "rgba(17, 17, 17, 0.08)" : "#e8e8e4";
 
   return (
     <View
@@ -1017,15 +1308,15 @@ function renderAppGlyph(type, accent) {
     case "message":
       return <MessageGlyph color={accent} />;
     case "messenger":
-      return <Text style={[styles.smallLetter, { color: accent }]}>M</Text>;
+      return <MessengerGlyph color={accent} />;
     case "whatsapp":
-      return <Text style={[styles.smallLetter, { color: accent }]}>W</Text>;
+      return <WhatsAppGlyph color={accent} />;
     case "telegram":
       return <TelegramGlyph color={accent} />;
     case "slack":
       return <SlackGlyph />;
     case "teams":
-      return <Text style={[styles.smallLetter, { color: accent }]}>T</Text>;
+      return <TeamsGlyph color={accent} />;
     case "gmail":
       return <GmailGlyph />;
     case "openai":
@@ -1037,102 +1328,10 @@ function renderAppGlyph(type, accent) {
     case "docs":
       return <DocsGlyph />;
     case "notes":
-      return <NotesGlyph />;
+      return <NotesGlyph color={accent} />;
     default:
       return null;
   }
-}
-
-function MessageGlyph({ color }) {
-  return (
-    <View style={styles.messageGlyph}>
-      <View style={[styles.messageBody, { borderColor: color }]} />
-      <View style={[styles.messageTail, { backgroundColor: color }]} />
-    </View>
-  );
-}
-
-function TelegramGlyph({ color }) {
-  return <View style={[styles.telegramGlyph, { borderLeftColor: color }]} />;
-}
-
-function SlackGlyph() {
-  return (
-    <View style={styles.slackGlyph}>
-      <View style={[styles.slackBar, { backgroundColor: "#e01e5a" }]} />
-      <View style={[styles.slackBar, { backgroundColor: "#36c5f0" }]} />
-      <View style={[styles.slackBar, { backgroundColor: "#2eb67d" }]} />
-      <View style={[styles.slackBar, { backgroundColor: "#ecb22e" }]} />
-    </View>
-  );
-}
-
-function GmailGlyph() {
-  return (
-    <View style={styles.gmailGlyph}>
-      <View style={[styles.gmailBar, { backgroundColor: "#ea4335" }]} />
-      <View style={[styles.gmailBar, { backgroundColor: "#fbbc05" }]} />
-      <View style={[styles.gmailBar, { backgroundColor: "#34a853" }]} />
-      <View style={[styles.gmailBar, { backgroundColor: "#4285f4" }]} />
-    </View>
-  );
-}
-
-function OpenAIGlyph({ color }) {
-  return (
-    <View style={styles.openAiGlyph}>
-      <View style={[styles.openAiPetal, styles.openAiPetal1, { backgroundColor: color }]} />
-      <View style={[styles.openAiPetal, styles.openAiPetal2, { backgroundColor: color }]} />
-      <View style={[styles.openAiPetal, styles.openAiPetal3, { backgroundColor: color }]} />
-      <View style={[styles.openAiPetal, styles.openAiPetal4, { backgroundColor: color }]} />
-      <View style={[styles.openAiPetal, styles.openAiPetal5, { backgroundColor: color }]} />
-      <View style={[styles.openAiPetal, styles.openAiPetal6, { backgroundColor: color }]} />
-      <View style={[styles.openAiCenter, { backgroundColor: color === "#ffffff" ? "#111111" : "#ffffff" }]} />
-    </View>
-  );
-}
-
-function OutlookGlyph({ color }) {
-  return (
-    <View style={styles.outlookGlyph}>
-      <View style={[styles.outlookPanel, { borderColor: color }]} />
-      <View style={[styles.outlookFold, { borderTopColor: color }]} />
-      <View style={[styles.outlookLine, { backgroundColor: color }]} />
-    </View>
-  );
-}
-
-function MailGlyph({ color }) {
-  return (
-    <View style={styles.mailGlyph}>
-      <View style={[styles.mailEnvelope, { borderColor: color }]} />
-      <View style={[styles.mailFlapLeft, { backgroundColor: color }]} />
-      <View style={[styles.mailFlapRight, { backgroundColor: color }]} />
-    </View>
-  );
-}
-
-function DocsGlyph() {
-  return (
-    <View style={styles.docsGlyph}>
-      <View style={styles.docsSheet} />
-      <View style={styles.docsFold} />
-      <View style={styles.docsLine} />
-      <View style={styles.docsLineSecond} />
-      <View style={styles.docsLineThird} />
-    </View>
-  );
-}
-
-function NotesGlyph() {
-  return (
-    <View style={styles.notesGlyph}>
-      <View style={styles.notesSheet} />
-      <View style={styles.notesHeader} />
-      <View style={styles.notesLine} />
-      <View style={styles.notesLineSecond} />
-    </View>
-  );
 }
 
 function HomeGlyph({ color }) {
@@ -1146,13 +1345,154 @@ function HomeGlyph({ color }) {
 }
 
 export const styles = StyleSheet.create({
+  welcomeLoading: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "transparent",
+  },
+  welcomeSafeInner: {
+    flex: 1,
+  },
+  welcomeScreen: {
+    flex: 1,
+    paddingHorizontal: 24,
+    paddingTop: 26,
+    paddingBottom: 16,
+    justifyContent: "space-between",
+  },
+  welcomeHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 12,
+  },
+  welcomeLogoMark: {
+    width: 34,
+    height: 34,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginRight: 10,
+  },
+  welcomeLogoBarShort: {
+    width: 4,
+    height: 18,
+    borderRadius: 4,
+    backgroundColor: "#ffffff",
+  },
+  welcomeLogoBarTall: {
+    width: 4,
+    height: 32,
+    borderRadius: 4,
+    backgroundColor: "#ffffff",
+  },
+  welcomeLogoBarMid: {
+    width: 4,
+    height: 25,
+    borderRadius: 4,
+    backgroundColor: "#ffffff",
+  },
+  welcomeLogoText: {
+    fontSize: 38,
+    lineHeight: 42,
+    fontWeight: "700",
+    letterSpacing: -1.2,
+    color: "#ffffff",
+  },
+  welcomeTitle: {
+    marginTop: 24,
+    textAlign: "center",
+    fontFamily: Platform.OS === "ios" ? "Georgia" : "serif",
+    fontSize: 30,
+    lineHeight: 38,
+    color: "#fff9eb",
+  },
+  welcomeScrollContent: {
+    paddingBottom: 8,
+  },
+  welcomeExampleCard: {
+    marginTop: 14,
+    padding: 16,
+    borderRadius: 18,
+    backgroundColor: "rgba(0, 0, 0, 0.36)",
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.14)",
+  },
+  welcomeExampleTag: {
+    alignSelf: "flex-start",
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 8,
+    backgroundColor: "rgba(255, 255, 255, 0.92)",
+    marginBottom: 10,
+  },
+  welcomeExampleTagText: {
+    fontSize: 11,
+    fontWeight: "700",
+    letterSpacing: 0.6,
+    textTransform: "uppercase",
+    color: "#141414",
+  },
+  welcomeExampleInput: {
+    fontSize: 14,
+    lineHeight: 20,
+    color: "rgba(255, 255, 255, 0.72)",
+  },
+  welcomeExampleOutput: {
+    marginTop: 6,
+    fontSize: 16,
+    lineHeight: 22,
+    fontWeight: "600",
+    color: "#ffffff",
+  },
+  welcomeBody: {
+    marginTop: 8,
+    paddingHorizontal: 12,
+    textAlign: "center",
+    fontSize: 17,
+    lineHeight: 24,
+    color: "rgba(255, 255, 255, 0.92)",
+  },
+  welcomeFooter: {
+    alignItems: "center",
+  },
+  welcomeDots: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 26,
+  },
+  welcomeDot: {
+    width: 12,
+    height: 12,
+    marginHorizontal: 6,
+    borderRadius: 6,
+    backgroundColor: "rgba(255, 255, 255, 0.55)",
+  },
+  welcomeDotActive: {
+    backgroundColor: "#ffffff",
+  },
+  welcomeButton: {
+    width: "100%",
+    minHeight: 64,
+    borderRadius: 16,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#0a0a0a",
+  },
+  welcomeButtonText: {
+    fontSize: 23,
+    lineHeight: 28,
+    fontWeight: "700",
+    color: "#ffffff",
+  },
   homeSafe: {
     flex: 1,
-    backgroundColor: "#f3ecdc",
+    backgroundColor: "transparent",
   },
   homeScreen: {
     flex: 1,
-    backgroundColor: "#f3ecdc",
+    backgroundColor: "transparent",
   },
   homeContent: {
     paddingHorizontal: 16,
@@ -1184,7 +1524,7 @@ export const styles = StyleSheet.create({
     backgroundColor: "#f04f1f",
     alignItems: "center",
     justifyContent: "center",
-    transform: [{ translateY: 40 }],
+    transform: [{ translateY: 48 }],
   },
   homeBrandWrap: {
     flex: 1,
@@ -1201,19 +1541,20 @@ export const styles = StyleSheet.create({
     alignItems: "flex-start",
     paddingHorizontal: 18,
     paddingVertical: 34,
+    marginTop: 24,
   },
   homeSloganTitle: {
     fontSize: 30,
     lineHeight: 36,
     textAlign: "left",
-    color: "#111111",
+    color: "#ffffff",
   },
   homeSloganBody: {
     marginTop: 10,
     fontSize: 13,
     lineHeight: 18,
     textAlign: "left",
-    color: "#111111",
+    color: "rgba(255, 255, 255, 0.82)",
   },
   homeBannerCard: {
     position: "absolute",
@@ -1442,11 +1783,11 @@ export const styles = StyleSheet.create({
   },
   styleSafe: {
     flex: 1,
-    backgroundColor: "#f3ecdc",
+    backgroundColor: "transparent",
   },
   styleScreen: {
     flex: 1,
-    backgroundColor: "#f3ecdc",
+    backgroundColor: "transparent",
   },
   styleContent: {
     paddingHorizontal: 16,
@@ -1484,11 +1825,11 @@ export const styles = StyleSheet.create({
   segmentedWrap: {
     height: 66,
     borderRadius: 33,
-    backgroundColor: "#000000",
+    backgroundColor: "rgba(255, 255, 255, 0.62)",
     flexDirection: "row",
     overflow: "hidden",
     borderWidth: 1,
-    borderColor: "#000000",
+    borderColor: "rgba(255, 255, 255, 0.4)",
   },
   segment: {
     flex: 1,
@@ -1498,15 +1839,15 @@ export const styles = StyleSheet.create({
   },
   segmentDivider: {
     borderRightWidth: 1,
-    borderRightColor: "#333333",
+    borderRightColor: "rgba(17, 17, 17, 0.08)",
   },
   segmentActive: {
-    backgroundColor: "#222222",
+    backgroundColor: "#25232a",
   },
   segmentText: {
     fontSize: 17,
     lineHeight: 20,
-    color: "#ffffff",
+    color: "#4d4f58",
   },
   segmentTextActive: {
     color: "#ffffff",
@@ -1546,257 +1887,18 @@ export const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  smallLetter: {
-    fontSize: 17,
-    lineHeight: 19,
-  },
-  messageGlyph: {
-    width: 18,
-    height: 18,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  messageBody: {
-    width: 16,
-    height: 12,
-    borderWidth: 2,
-    borderRadius: 5,
-    backgroundColor: "transparent",
-  },
-  messageTail: {
-    position: "absolute",
-    left: 4,
-    bottom: 2,
-    width: 5,
-    height: 5,
-    transform: [{ rotate: "45deg" }],
-  },
-  telegramGlyph: {
-    width: 0,
-    height: 0,
-    borderLeftWidth: 11,
-    borderTopWidth: 6,
-    borderBottomWidth: 6,
-    borderTopColor: "transparent",
-    borderBottomColor: "transparent",
-    borderLeftColor: "#2fa5f4",
-    marginLeft: 3,
-  },
-  slackGlyph: {
-    width: 20,
-    height: 20,
-    flexDirection: "row",
-    flexWrap: "wrap",
-    alignContent: "center",
-    justifyContent: "center",
-  },
-  slackBar: {
-    width: 6,
-    height: 6,
-    borderRadius: 2,
-    margin: 1.2,
-  },
-  gmailGlyph: {
-    width: 20,
-    height: 20,
-    flexDirection: "row",
-    alignItems: "flex-end",
-    justifyContent: "space-between",
-    paddingHorizontal: 1,
-  },
-  gmailBar: {
-    width: 3.4,
-    height: 13,
-    borderRadius: 1.6,
-  },
-  openAiGlyph: {
-    width: 20,
-    height: 20,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  openAiPetal: {
-    position: "absolute",
-    width: 6,
-    height: 10,
-    borderRadius: 4,
-  },
-  openAiPetal1: { top: 1 },
-  openAiPetal2: { top: 5, left: 10, transform: [{ rotate: "60deg" }] },
-  openAiPetal3: { top: 11, left: 10, transform: [{ rotate: "120deg" }] },
-  openAiPetal4: { top: 13, transform: [{ rotate: "180deg" }] },
-  openAiPetal5: { top: 11, left: 0, transform: [{ rotate: "240deg" }] },
-  openAiPetal6: { top: 5, left: 0, transform: [{ rotate: "300deg" }] },
-  openAiCenter: {
-    width: 5,
-    height: 5,
-    borderRadius: 2.5,
-    position: "absolute",
-  },
-  outlookGlyph: {
-    width: 20,
-    height: 20,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  outlookPanel: {
-    width: 18,
-    height: 15,
-    borderRadius: 3,
-    borderWidth: 1.8,
-    backgroundColor: "#ffffff",
-  },
-  outlookFold: {
-    position: "absolute",
-    right: 2,
-    top: 3,
-    width: 8,
-    height: 8,
-    borderTopWidth: 7,
-    borderLeftWidth: 7,
-    borderTopColor: "#ffffff",
-    borderLeftColor: "transparent",
-    borderRightColor: "transparent",
-    borderBottomColor: "transparent",
-  },
-  outlookLine: {
-    position: "absolute",
-    left: 4,
-    bottom: 5,
-    width: 12,
-    height: 1.5,
-    borderRadius: 1,
-  },
-  mailGlyph: {
-    width: 20,
-    height: 20,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  mailEnvelope: {
-    width: 18,
-    height: 13,
-    borderRadius: 3,
-    borderWidth: 2,
-    backgroundColor: "#ffffff",
-  },
-  mailFlapLeft: {
-    position: "absolute",
-    left: 4,
-    top: 6,
-    width: 8,
-    height: 2,
-    transform: [{ rotate: "34deg" }],
-  },
-  mailFlapRight: {
-    position: "absolute",
-    right: 4,
-    top: 6,
-    width: 8,
-    height: 2,
-    transform: [{ rotate: "-34deg" }],
-  },
-  docsGlyph: {
-    width: 20,
-    height: 20,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  docsSheet: {
-    width: 16,
-    height: 18,
-    borderRadius: 2,
-    backgroundColor: "#4285f4",
-  },
-  docsFold: {
-    position: "absolute",
-    right: 4,
-    top: 4,
-    width: 0,
-    height: 0,
-    borderLeftWidth: 5,
-    borderTopWidth: 5,
-    borderLeftColor: "transparent",
-    borderTopColor: "#ffffff",
-    borderRightColor: "transparent",
-    borderBottomColor: "transparent",
-  },
-  docsLine: {
-    position: "absolute",
-    left: 5,
-    top: 8,
-    width: 10,
-    height: 1.5,
-    borderRadius: 1,
-    backgroundColor: "#ffffff",
-  },
-  docsLineSecond: {
-    position: "absolute",
-    left: 5,
-    top: 11,
-    width: 10,
-    height: 1.5,
-    borderRadius: 1,
-    backgroundColor: "#ffffff",
-  },
-  docsLineThird: {
-    position: "absolute",
-    left: 5,
-    top: 14,
-    width: 7,
-    height: 1.5,
-    borderRadius: 1,
-    backgroundColor: "#ffffff",
-  },
-  notesGlyph: {
-    width: 20,
-    height: 20,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  notesSheet: {
-    width: 16,
-    height: 18,
-    borderRadius: 2,
-    backgroundColor: "#ffffff",
-  },
-  notesHeader: {
-    position: "absolute",
-    top: 1,
-    width: 16,
-    height: 5,
-    borderTopLeftRadius: 2,
-    borderTopRightRadius: 2,
-    backgroundColor: "#f3cf4f",
-  },
-  notesLine: {
-    position: "absolute",
-    left: 4,
-    top: 9,
-    width: 9,
-    height: 1.5,
-    borderRadius: 1,
-    backgroundColor: "#d5d5d5",
-  },
-  notesLineSecond: {
-    position: "absolute",
-    left: 4,
-    top: 12,
-    width: 9,
-    height: 1.5,
-    borderRadius: 1,
-    backgroundColor: "#d5d5d5",
-  },
   caption: {
     marginTop: 8,
     fontSize: 17,
     lineHeight: 24,
-    color: "#8e8a90",
+    color: "rgba(255, 255, 255, 0.78)",
   },
   heroCard: {
     marginTop: 22,
-    backgroundColor: "#f1ebff",
+    backgroundColor: "rgba(255, 255, 255, 0.62)",
     borderRadius: 28,
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.4)",
     paddingHorizontal: 20,
     paddingTop: 34,
     paddingBottom: 28,
@@ -1804,21 +1906,21 @@ export const styles = StyleSheet.create({
   heroTitle: {
     fontSize: 28,
     lineHeight: 32,
-    color: "#2b2b30",
+    color: "#25232a",
     textAlign: "center",
   },
   heroSubtitle: {
     marginTop: 10,
     fontSize: 17,
     lineHeight: 22,
-    color: "#2b2b30",
+    color: "#5c5763",
     textAlign: "center",
   },
   heroButton: {
     marginTop: 22,
     height: 48,
     borderRadius: 10,
-    backgroundColor: "#4b4752",
+    backgroundColor: "#8a5cc2",
     alignItems: "center",
     justifyContent: "center",
   },
@@ -1829,8 +1931,10 @@ export const styles = StyleSheet.create({
   },
   styleCard: {
     marginTop: 22,
-    backgroundColor: "#000000",
+    backgroundColor: "rgba(255, 255, 255, 0.62)",
     borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.4)",
     paddingHorizontal: 18,
     paddingTop: 18,
     paddingBottom: 16,
@@ -1852,18 +1956,18 @@ export const styles = StyleSheet.create({
   styleCardTitle: {
     fontSize: 28,
     lineHeight: 30,
-    color: "#ffffff",
+    color: "#25232a",
   },
   styleCardEyebrow: {
     fontSize: 14,
     lineHeight: 18,
-    color: "#bdbdbd",
+    color: "#77737f",
     marginBottom: 4,
   },
   styleCardSubtitle: {
     fontSize: 21,
     lineHeight: 24,
-    color: "#ffffff",
+    color: "#25232a",
   },
   previewBubble: {
     marginTop: 16,
@@ -1898,11 +2002,11 @@ export const styles = StyleSheet.create({
     marginTop: 24,
     textAlign: "center",
     fontSize: 15,
-    color: "#8e8e91",
+    color: "rgba(255, 255, 255, 0.7)",
   },
   settingsSafe: {
     flex: 1,
-    backgroundColor: "#f3ecdc",
+    backgroundColor: "transparent",
   },
   settingsContent: {
     paddingHorizontal: 28,
@@ -1925,7 +2029,7 @@ export const styles = StyleSheet.create({
   settingsBackGlyph: {
     fontSize: 40,
     lineHeight: 40,
-    color: "#1a1a1f",
+    color: "#202026",
     marginTop: -2,
   },
   settingsTitle: {
@@ -1933,7 +2037,7 @@ export const styles = StyleSheet.create({
     textAlign: "center",
     fontSize: 25,
     lineHeight: 28,
-    color: "#1b1b1f",
+    color: "#202026",
   },
   settingsTopSpacer: {
     width: 44,
@@ -1943,7 +2047,7 @@ export const styles = StyleSheet.create({
     marginBottom: 14,
     fontSize: 17,
     lineHeight: 20,
-    color: "#7f7f86",
+    color: "rgba(32, 32, 38, 0.6)",
     letterSpacing: 0,
   },
   settingsSectionSpacing: {
@@ -2041,11 +2145,11 @@ export const styles = StyleSheet.create({
     marginTop: 30,
     fontSize: 16,
     lineHeight: 20,
-    color: "#8d8d93",
+    color: "rgba(32, 32, 38, 0.4)",
   },
   accountSafe: {
     flex: 1,
-    backgroundColor: "#f3ecdc",
+    backgroundColor: "transparent",
   },
   accountContent: {
     paddingHorizontal: 28,
@@ -2068,7 +2172,7 @@ export const styles = StyleSheet.create({
   accountBackGlyph: {
     fontSize: 40,
     lineHeight: 40,
-    color: "#1a1a1f",
+    color: "#1f1f24",
     marginTop: -2,
   },
   accountTitle: {
@@ -2076,7 +2180,7 @@ export const styles = StyleSheet.create({
     textAlign: "left",
     fontSize: 25,
     lineHeight: 28,
-    color: "#1b1b1f",
+    color: "#1f1f24",
     paddingLeft: 8,
   },
   accountTopSpacer: {
@@ -2453,6 +2557,9 @@ drawerAccountBody: {
     backgroundColor: "#f3ecdc",
     borderTopWidth: 1,
     borderTopColor: "#ececec",
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    overflow: "hidden",
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",

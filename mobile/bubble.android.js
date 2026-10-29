@@ -6,30 +6,36 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import FloatingBubble from "@increase21/rn-floating-bubble";
 
 const BUBBLE_SIZE_DP = 44;
-const BUBBLE_BOTTOM_GAP_DP = 96;
+// Default landing spot for the bubble: top area, right-of-center horizontally, so it
+// shows up near the top of the screen (clear of the keyboard, which covers the bottom
+// when a text field is focused) instead of the bottom-left corner it used to default to.
+const BUBBLE_TOP_GAP_DP = 80; // clears the status bar / notch comfortably
+const BUBBLE_HORIZONTAL_FRACTION = 0.7; // 0 = left edge, 1 = right edge; 0.7 = right-of-center
 const BUBBLE_OPACITY_KEY = "@mutter/bubble-opacity";
 const BUBBLE_ENABLED_KEY = "@mutter/bubble-enabled";
 const DEFAULT_BUBBLE_OPACITY = 0.9;
 const DEFAULT_BUBBLE_OPTIONS = {
   size: BUBBLE_SIZE_DP,
   color: 0xFF0A0A0A,
-  initialX: Math.round(16 * PixelRatio.get()),
-  initialY: 0,
   useLauncherIcon: true,
 };
-const BUBBLE_ICON_ASSET = require("./assets/mutter-bubble-logo-dark.png");
+// mutter-bubble-logo-dark.png is the DARK-BACKGROUND variant (white dots) — it nearly
+// disappears against the app's light beige background. The light-background variant
+// (dark dots) is the one that actually reads as a solid, visible bubble.
+const BUBBLE_ICON_ASSET = require("./assets/mutter-bubble-logo.png");
 const wait = (duration) => new Promise((resolve) => setTimeout(resolve, duration));
 
 let bubbleIconPromise;
 
-function getBottomBubbleY() {
-  const windowHeightDp = Dimensions.get("window").height;
-  return Math.max(
-    0,
-    Math.round(
-      (windowHeightDp - BUBBLE_BOTTOM_GAP_DP - BUBBLE_SIZE_DP) * PixelRatio.get()
-    )
+function getTopRightBubbleX() {
+  const windowWidthDp = Dimensions.get("window").width;
+  return Math.round(
+    (windowWidthDp * BUBBLE_HORIZONTAL_FRACTION - BUBBLE_SIZE_DP / 2) * PixelRatio.get()
   );
+}
+
+function getTopBubbleY() {
+  return Math.round(BUBBLE_TOP_GAP_DP * PixelRatio.get());
 }
 
 async function getBubbleIconBase64() {
@@ -54,7 +60,8 @@ async function getBubbleIconBase64() {
 async function buildBubbleOptions(opacity) {
   const options = {
     ...DEFAULT_BUBBLE_OPTIONS,
-    initialY: getBottomBubbleY(),
+    initialX: getTopRightBubbleX(),
+    initialY: getTopBubbleY(),
     opacity,
   };
 
@@ -217,7 +224,13 @@ export function useFloatingBubbleController() {
     return true;
   }, []);
 
-  const enable = useCallback(async () => {
+  // Overlay and text-input are two distinct Android permissions granted from two
+  // distinct Settings screens — kept as separate functions so each onboarding step can
+  // trigger only its own permission, instead of one tap silently cascading into both.
+  // Neither of these makes the bubble visible on its own — see activateBubble below,
+  // which is only called once the whole onboarding flow is actually done. Otherwise the
+  // bubble would pop up after just the overlay step, before text-input is even asked for.
+  const enableOverlay = useCallback(async () => {
     if (Platform.OS !== "android") {
       return false;
     }
@@ -231,36 +244,87 @@ export function useFloatingBubbleController() {
 
         // Android returns from Settings asynchronously; verify the real state
         // instead of trusting the settings activity result.
-        for (let attempt = 0; attempt < 5 && !granted; attempt += 1) {
-          await wait(250);
+        for (let attempt = 0; attempt < 20 && !granted; attempt += 1) {
+          await wait(300);
           granted = await FloatingBubble.hasPermission();
         }
       }
 
+      setPermissionState(granted ? "granted" : "denied");
+      return granted;
+    } finally {
+      setIsBusy(false);
+    }
+  }, []);
+
+  const requestTextInputPermission = useCallback(async () => {
+    if (Platform.OS !== "android") {
+      return false;
+    }
+
+    setIsBusy(true);
+    try {
+      let granted = await FloatingBubble.hasTextInputPermission();
       if (!granted) {
-        setPermissionState("denied");
-        setEnabled(false);
-        await AsyncStorage.removeItem(BUBBLE_ENABLED_KEY);
-        return false;
+        setTextInputPermissionState("requesting");
+        await FloatingBubble.requestTextInputPermission();
+
+        // Accessibility Settings is a deeper navigation (find the app in a list,
+        // toggle it, confirm a dialog, then back out) than the overlay permission —
+        // give it a much longer window, and verify the real state rather than
+        // trusting the settings activity result or leaving state stuck at "requesting".
+        for (let attempt = 0; attempt < 30 && !granted; attempt += 1) {
+          await wait(500);
+          granted = await FloatingBubble.hasTextInputPermission();
+        }
       }
 
+      setTextInputPermissionState(granted ? "granted" : "denied");
+      return granted;
+    } finally {
+      setIsBusy(false);
+    }
+  }, []);
+
+  // Actually shows the bubble — call this once, after the whole permission sequence is
+  // finished (or skipped), not from the individual permission steps themselves.
+  const activateBubble = useCallback(async () => {
+    if (Platform.OS !== "android") {
+      return false;
+    }
+
+    const granted = await FloatingBubble.hasPermission();
+    if (!granted) {
+      setPermissionState("denied");
+      setEnabled(false);
+      await AsyncStorage.removeItem(BUBBLE_ENABLED_KEY);
+      return false;
+    }
+
+    setIsBusy(true);
+    try {
       const options = await buildBubbleOptions(opacity);
       await FloatingBubble.configure(options);
       setPermissionState("granted");
       await AsyncStorage.setItem(BUBBLE_ENABLED_KEY, "true");
       setEnabled(true);
-
-      const hasTextInputPermission = await FloatingBubble.hasTextInputPermission();
-      setTextInputPermissionState(hasTextInputPermission ? "granted" : "denied");
-      if (!hasTextInputPermission) {
-        setTextInputPermissionState("requesting");
-        await FloatingBubble.requestTextInputPermission();
-      }
       return true;
     } finally {
       setIsBusy(false);
     }
   }, [opacity]);
+
+  // Combined convenience path for call sites that still want "grant whatever's left in
+  // one go" (e.g. HomeBannerCard's single catch-all button) — the onboarding wizard
+  // calls enableOverlay/requestTextInputPermission/activateBubble separately instead.
+  const enable = useCallback(async () => {
+    const overlayGranted = await enableOverlay();
+    if (!overlayGranted) {
+      return false;
+    }
+    await requestTextInputPermission();
+    return activateBubble();
+  }, [enableOverlay, requestTextInputPermission, activateBubble]);
 
   useEffect(() => {
     const handleAppState = async (state) => {
@@ -279,6 +343,9 @@ export function useFloatingBubbleController() {
 
   return {
     enable,
+    enableOverlay,
+    requestTextInputPermission,
+    activateBubble,
     enabled,
     hide,
     configureVoiceSession,

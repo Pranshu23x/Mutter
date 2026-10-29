@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { StatusBar } from "expo-status-bar";
+import { LinearGradient } from "expo-linear-gradient";
 import {
   Modal,
   SafeAreaView,
@@ -8,7 +9,12 @@ import {
   Text,
   View,
 } from "react-native";
-import { SettingsRow, SoftTouchableOpacity, ToggleSettingsRow, styles } from "../App";
+import {
+  SettingsRow,
+  SoftTouchableOpacity,
+  ToggleSettingsRow,
+  styles,
+} from "../App";
 
 const OPACITY_OPTIONS = [25, 50, 75, 100];
 
@@ -28,100 +34,102 @@ export default function SettingsScreen({ onBack, bubbleOpacity = 0.55, onBubbleO
   };
 
   return (
-    <SafeAreaView style={styles.settingsSafe}>
-      <StatusBar style="dark" />
+    <LinearGradient colors={["#cfe0ff", "#eaf1ff", "#ffffff"]} style={{ flex: 1 }}>
+      <SafeAreaView style={styles.settingsSafe}>
+        <StatusBar style="dark" />
 
-      <ScrollView
-        showsVerticalScrollIndicator={false}
-        contentContainerStyle={styles.settingsContent}
-      >
-        <View style={styles.settingsTopBar}>
-          <SoftTouchableOpacity onPress={onBack} style={styles.settingsBackButton}>
-            <Text style={styles.settingsBackGlyph}>{"\u2190"}</Text>
-          </SoftTouchableOpacity>
-          <Text style={styles.settingsTitle}>Settings</Text>
-          <View style={styles.settingsTopSpacer} />
-        </View>
-
-        <Text style={styles.settingsSectionLabel}>GENERAL</Text>
-
-        <View style={styles.settingsCard}>
-          <SettingsRow
-            title="Output language"
-            subtitle="English - British"
-          />
-          <View style={styles.settingsDivider} />
-          <SettingsRow title="Mutter Bubble Size" showChevron />
-          <View style={styles.settingsDivider} />
-          <SettingsRow
-            title="Mutter Bubble Opacity"
-            subtitle={`${opacityDraft}%`}
-            showChevron
-            onPress={() => setOpacityModalVisible(true)}
-          />
-        </View>
-
-        <Text style={[styles.settingsSectionLabel, styles.settingsSectionSpacing]}>
-          DATA & PRIVACY
-        </Text>
-
-        <View style={styles.settingsCard}>
-          <ToggleSettingsRow
-            title="Privacy mode"
-            description="Your data will not be used to improve or train AI models, by Wispr or any third party."
-            value={privacyOn}
-            onToggle={() => setPrivacyOn((current) => !current)}
-          />
-          <View style={styles.settingsToggleSpacer} />
-          <ToggleSettingsRow
-            title="Cloud Sync"
-            description="Stores transcripts and audio on Wispr servers to enable cross-device sync"
-            value={cloudSyncOn}
-            onToggle={() => setCloudSyncOn((current) => !current)}
-            valueStyle="off"
-          />
-        </View>
-
-        <Text style={styles.settingsVersion}>APP VERSION V1.0</Text>
-      </ScrollView>
-
-      <Modal
-        visible={opacityModalVisible}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setOpacityModalVisible(false)}
-      >
-        <View style={opacityStyles.modalBackdrop}>
-          <View style={opacityStyles.modalCard}>
-            <Text style={opacityStyles.modalTitle}>Bubble opacity</Text>
-            <Text style={opacityStyles.modalDescription}>
-              Choose how transparent the Mutter bubble should look.
-            </Text>
-
-            <View style={opacityStyles.optionsRow}>
-              {OPACITY_OPTIONS.map((option) => {
-                const selected = opacityDraft === option;
-                return (
-                  <SoftTouchableOpacity
-                    key={option}
-                    onPress={() => setOpacityDraft(option)}
-                    style={[opacityStyles.option, selected && opacityStyles.optionSelected]}
-                  >
-                    <Text style={[opacityStyles.optionText, selected && opacityStyles.optionTextSelected]}>
-                      {option}%
-                    </Text>
-                  </SoftTouchableOpacity>
-                );
-              })}
-            </View>
-
-            <SoftTouchableOpacity onPress={saveOpacity} style={opacityStyles.saveButton}>
-              <Text style={opacityStyles.saveButtonText}>Save</Text>
+        <ScrollView
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={styles.settingsContent}
+        >
+          <View style={styles.settingsTopBar}>
+            <SoftTouchableOpacity onPress={onBack} style={styles.settingsBackButton}>
+              <Text style={styles.settingsBackGlyph}>{"\u2190"}</Text>
             </SoftTouchableOpacity>
+            <Text style={styles.settingsTitle}>Settings</Text>
+            <View style={styles.settingsTopSpacer} />
           </View>
-        </View>
-      </Modal>
-    </SafeAreaView>
+
+          <Text style={styles.settingsSectionLabel}>GENERAL</Text>
+
+          <View style={styles.settingsCard}>
+            <SettingsRow
+              title="Output language"
+              subtitle="English - British"
+            />
+            <View style={styles.settingsDivider} />
+            <SettingsRow title="Mutter Bubble Size" showChevron />
+            <View style={styles.settingsDivider} />
+            <SettingsRow
+              title="Mutter Bubble Opacity"
+              subtitle={`${opacityDraft}%`}
+              showChevron
+              onPress={() => setOpacityModalVisible(true)}
+            />
+          </View>
+
+          <Text style={[styles.settingsSectionLabel, styles.settingsSectionSpacing]}>
+            DATA & PRIVACY
+          </Text>
+
+          <View style={styles.settingsCard}>
+            <ToggleSettingsRow
+              title="Privacy mode"
+              description="Your data will not be used to improve or train AI models, by Wispr or any third party."
+              value={privacyOn}
+              onToggle={() => setPrivacyOn((current) => !current)}
+            />
+            <View style={styles.settingsToggleSpacer} />
+            <ToggleSettingsRow
+              title="Cloud Sync"
+              description="Stores transcripts and audio on Wispr servers to enable cross-device sync"
+              value={cloudSyncOn}
+              onToggle={() => setCloudSyncOn((current) => !current)}
+              valueStyle="off"
+            />
+          </View>
+
+          <Text style={styles.settingsVersion}>APP VERSION V1.0</Text>
+        </ScrollView>
+
+        <Modal
+          visible={opacityModalVisible}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setOpacityModalVisible(false)}
+        >
+          <View style={opacityStyles.modalBackdrop}>
+            <View style={opacityStyles.modalCard}>
+              <Text style={opacityStyles.modalTitle}>Bubble opacity</Text>
+              <Text style={opacityStyles.modalDescription}>
+                Choose how transparent the Mutter bubble should look.
+              </Text>
+
+              <View style={opacityStyles.optionsRow}>
+                {OPACITY_OPTIONS.map((option) => {
+                  const selected = opacityDraft === option;
+                  return (
+                    <SoftTouchableOpacity
+                      key={option}
+                      onPress={() => setOpacityDraft(option)}
+                      style={[opacityStyles.option, selected && opacityStyles.optionSelected]}
+                    >
+                      <Text style={[opacityStyles.optionText, selected && opacityStyles.optionTextSelected]}>
+                        {option}%
+                      </Text>
+                    </SoftTouchableOpacity>
+                  );
+                })}
+              </View>
+
+              <SoftTouchableOpacity onPress={saveOpacity} style={opacityStyles.saveButton}>
+                <Text style={opacityStyles.saveButtonText}>Save</Text>
+              </SoftTouchableOpacity>
+            </View>
+          </View>
+        </Modal>
+      </SafeAreaView>
+    </LinearGradient>
   );
 }
 

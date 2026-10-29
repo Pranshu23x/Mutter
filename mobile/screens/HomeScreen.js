@@ -1,13 +1,16 @@
 import { StatusBar } from "expo-status-bar";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Animated, SafeAreaView, ScrollView, Text, View } from "react-native";
 import {
   BrandMark,
   HomeBannerCard,
+  InitialFlowBackground,
   SoftTouchableOpacity,
   styles,
 } from "../App";
 import DictationPanel from "../components/DictationPanel";
+import UsagePill from "../components/UsagePill";
+import PaywallModal from "../components/PaywallModal";
 
 export default function HomeScreen({
   onOpenProfile,
@@ -25,9 +28,33 @@ export default function HomeScreen({
     microphonePermissionState === "granted" &&
     bubblePermissionState === "granted" &&
     bubbleTextInputPermissionState === "granted";
+  // Every permission state starts as "checking" on each app mount, while the native
+  // side asynchronously re-verifies already-granted permissions — treating "checking"
+  // the same as "denied" below would flash the "allow permissions" banner on every
+  // reload even for a user who granted everything long ago.
+  const stillChecking =
+    microphonePermissionState === "checking" ||
+    bubblePermissionState === "checking" ||
+    bubbleTextInputPermissionState === "checking";
   const needsMicrophone = microphonePermissionState !== "granted";
   const needsOverlay = bubblePermissionState !== "granted" || !bubbleEnabled;
   const needsTextInput = bubbleTextInputPermissionState !== "granted";
+
+  // List only what's actually still missing — a generic "allow overlay and
+  // text-input" message reads as ignoring permissions the user already granted.
+  const missingLabels = [
+    needsMicrophone && "microphone",
+    needsOverlay && "overlay",
+    needsTextInput && "text-input",
+  ].filter(Boolean);
+  const missingList =
+    missingLabels.length <= 1
+      ? missingLabels.join("")
+      : `${missingLabels.slice(0, -1).join(", ")} and ${missingLabels[missingLabels.length - 1]}`;
+  const bannerBody = missingLabels.length
+    ? `Allow ${missingList} access so you can speak naturally and turn your thoughts into English in any chat.`
+    : "";
+  const [paywallVisible, setPaywallVisible] = useState(false);
   const sloganOpacity = useRef(new Animated.Value(bubbleVisible ? 1 : 0)).current;
   const sloganOffset = useRef(new Animated.Value(bubbleVisible ? 0 : 8)).current;
 
@@ -55,8 +82,9 @@ export default function HomeScreen({
     : null;
 
   return (
+    <InitialFlowBackground>
     <SafeAreaView style={styles.homeSafe}>
-      <StatusBar style="dark" />
+      <StatusBar style="light" />
 
       <View style={styles.homeScreen}>
         <ScrollView
@@ -69,7 +97,7 @@ export default function HomeScreen({
             </SoftTouchableOpacity>
 
             <View style={styles.homeBrandWrap}>
-              <BrandMark />
+              <BrandMark tintColor="#ffffff" />
             </View>
 
             <View style={styles.homeTopSpacer} />
@@ -85,6 +113,8 @@ export default function HomeScreen({
               </Text>
             )}
           </View>
+          <UsagePill onLimitReached={() => setPaywallVisible(true)} />
+
           {permissionsReady && (
             <View
               style={[
@@ -92,16 +122,14 @@ export default function HomeScreen({
                 bubbleEnabled && styles.homePermissionSlotBottom,
               ]}
             >
-              <DictationPanel
-                expanded={bubbleEnabled}
-                microphonePermissionState={microphonePermissionState}
-              />
+              <DictationPanel />
             </View>
           )}
         </ScrollView>
 
-        {!bubbleVisible && !permissionsReady && (
+        {!bubbleVisible && !permissionsReady && !stillChecking && (
           <HomeBannerCard
+            body={bannerBody}
             buttonLabel={
               bubbleBusy
                 ? "Opening settings..."
@@ -120,6 +148,9 @@ export default function HomeScreen({
           />
         )}
       </View>
+
+      <PaywallModal visible={paywallVisible} onClose={() => setPaywallVisible(false)} />
     </SafeAreaView>
+    </InitialFlowBackground>
   );
 }

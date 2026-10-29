@@ -1,225 +1,137 @@
-import { useEffect, useState } from "react";
-import {
-  PermissionsAndroid,
-  Platform,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
-} from "react-native";
+import { useEffect, useRef, useState } from "react";
+import { Animated, StyleSheet, Text, View } from "react-native";
 
+// Rotating "you say -> Mutter writes" examples, mixing Hindi and English the way
+// people actually type/speak, crossfading into the clean English output. No card
+// background here on purpose — it should read as part of the hero copy, not a box.
 const EXAMPLES = [
   {
-    category: "Personal",
-    input: "ଆଜି थोड़ा देर ହେବ, traffic बहुत ज्यादा ଅଛି।",
-    output: "I’ll be a little late today, the traffic is really heavy.",
-  },
-  {
-    category: "Personal",
-    input: "আজকে আমার একটু late হবে, তুমি কি wait করতে পারবে?",
-    output: "I’ll be a little late today. Could you wait for me?",
-  },
-  {
-    category: "Work",
     input: "कल का report ready है, but एक बार check कर लेना please।",
     output: "The report for tomorrow is ready. Please review it once.",
   },
   {
-    category: "Work",
-    input: "இன்னைக்கு meeting கொஞ்சம் long ஆகிடுச்சு, I’ll call you in ten minutes.",
-    output: "The meeting ran long. I’ll call you in ten minutes.",
+    input: "రేపు meeting కొంచెం late అవ్వొచ్చు, is that fine?",
+    output: "Tomorrow's meeting might run a little late, is that okay?",
   },
   {
-    category: "Email",
+    input: "இன்னைக்கு meeting கொஞ்சம் long ஆகிடுச்சு, I'll call you in ten minutes.",
+    output: "The meeting ran long. I'll call you in ten minutes.",
+  },
+  {
+    input: "আজকে আমার একটু late হবে, তুমি কি wait করতে পারবে?",
+    output: "I'll be a little late today. Could you wait for me?",
+  },
+  {
     input: "मला उद्या थोडं लवकर निघावं लागेल, so can we move the meeting?",
     output: "I need to leave early tomorrow. Could we move the meeting?",
   },
+  {
+    input: "ನಾಳೆ ನಾನು ಸ್ವಲ್ಪ busy ಇರ್ತೀನಿ, call ಮಾಡೋಕೆ ಆಗಲ್ಲ.",
+    output: "I'll be a bit busy tomorrow, I won't be able to call.",
+  },
+  {
+    input: "કાલે meeting થોડી late થઈ શકે છે, is that okay?",
+    output: "Tomorrow's meeting might run a little late, is that okay?",
+  },
+  {
+    input: "ਅੱਜ ਮੈਨੂੰ ਥੋੜਾ late ਹੋਊ, tussi wait kar sakde ho?",
+    output: "I'll be a little late today, can you wait?",
+  },
+  {
+    input: "നാളെ meeting-ന് ഒരു ചെറിയ delay ഉണ്ടാകും, is that fine?",
+    output: "There'll be a small delay for tomorrow's meeting, is that okay?",
+  },
 ];
 
-export default function DictationPanel({
-  expanded = false,
-  microphonePermissionState = "checking",
-}) {
-  const [micBusy, setMicBusy] = useState(false);
-  const [micStatus, setMicStatus] = useState(microphonePermissionState);
+const FADE_MS = 280;
+const HOLD_INPUT_MS = 1500;
+const HOLD_OUTPUT_MS = 2000;
+
+export default function DictationPanel() {
+  const [index, setIndex] = useState(0);
+  const [phase, setPhase] = useState("input"); // "input" | "output"
+  const opacity = useRef(new Animated.Value(0)).current;
+  const shift = useRef(new Animated.Value(6)).current;
 
   useEffect(() => {
-    setMicStatus(microphonePermissionState);
-  }, [microphonePermissionState]);
+    let cancelled = false;
+    let timer;
 
-  useEffect(() => {
-    if (Platform.OS !== "android") {
-      setMicStatus("unavailable");
-      return;
-    }
+    const fadeIn = () =>
+      Animated.parallel([
+        Animated.timing(opacity, { toValue: 1, duration: FADE_MS, useNativeDriver: true }),
+        Animated.timing(shift, { toValue: 0, duration: FADE_MS, useNativeDriver: true }),
+      ]);
 
-    PermissionsAndroid.check(PermissionsAndroid.PERMISSIONS.RECORD_AUDIO).then(
-      (granted) => {
-        if (microphonePermissionState === "checking") {
-          setMicStatus(granted ? "granted" : "denied");
-        }
-      }
-    );
-  }, []);
+    const fadeOut = () =>
+      Animated.parallel([
+        Animated.timing(opacity, { toValue: 0, duration: FADE_MS, useNativeDriver: true }),
+        Animated.timing(shift, { toValue: -6, duration: FADE_MS, useNativeDriver: true }),
+      ]);
 
-  const requestMicPermission = async () => {
-    if (Platform.OS !== "android" || micBusy || micStatus === "granted") {
-      return;
-    }
+    const step = () => {
+      shift.setValue(6);
+      fadeIn().start(() => {
+        if (cancelled) return;
+        const hold = phase === "input" ? HOLD_INPUT_MS : HOLD_OUTPUT_MS;
+        timer = setTimeout(() => {
+          if (cancelled) return;
+          fadeOut().start(() => {
+            if (cancelled) return;
+            if (phase === "input") {
+              setPhase("output");
+            } else {
+              setPhase("input");
+              setIndex((prev) => (prev + 1) % EXAMPLES.length);
+            }
+          });
+        }, hold);
+      });
+    };
 
-    setMicBusy(true);
-    setMicStatus("requesting");
-    try {
-      const result = await PermissionsAndroid.request(
-        PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
-        {
-          title: "Microphone access",
-          message: "Mutter needs microphone access to dictate your speech.",
-          buttonPositive: "Allow microphone",
-          buttonNegative: "Not now",
-        }
-      );
+    step();
 
-      setMicStatus(result === PermissionsAndroid.RESULTS.GRANTED ? "granted" : "denied");
-    } finally {
-      setMicBusy(false);
-    }
-  };
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [phase, opacity, shift]);
+
+  const example = EXAMPLES[index];
+  const isOutput = phase === "output";
 
   return (
-    <View style={[styles.card, expanded && styles.cardExpanded]}>
-      <Text style={styles.title}>Say it naturally. Send it in English.</Text>
-      <Text style={styles.subtitle}>
-        {micStatus === "denied"
-          ? "Microphone access isn't enabled. Allow it to speak naturally and turn your words into English."
-          : micStatus === "granted"
-            ? "Microphone is enabled. Speak naturally and Mutter will turn your words into English."
-            : "Speak in the language you think in. Mutter turns it into professional, casual, or polished English for any chat."}
-      </Text>
-
-      <TouchableOpacity
-        activeOpacity={0.85}
-        onPress={requestMicPermission}
-        disabled={micBusy || micStatus === "granted" || Platform.OS !== "android"}
-        style={[styles.button, (micBusy || micStatus === "granted") && styles.buttonDisabled]}
-      >
-        <Text style={styles.buttonText}>
-          {micBusy
-            ? "Checking..."
-            : micStatus === "granted"
-              ? "Mic enabled"
-              : micStatus === "denied"
-                ? "Try again"
-              : "Enable microphone"}
+    <View style={styles.wrap}>
+      <Animated.View style={{ opacity, transform: [{ translateY: shift }] }}>
+        <Text style={styles.label}>{isOutput ? "Mutter writes" : "You say"}</Text>
+        <Text style={[styles.line, isOutput && styles.lineOutput]}>
+          {isOutput ? example.output : example.input}
         </Text>
-      </TouchableOpacity>
-
-      <Text style={styles.examplesTitle}>See how Mutter rewrites you</Text>
-      <ScrollView
-        style={styles.examplesScroll}
-        contentContainerStyle={styles.examplesContent}
-        showsVerticalScrollIndicator={false}
-        nestedScrollEnabled
-      >
-        {EXAMPLES.map((example) => (
-          <View key={`${example.category}-${example.input}`} style={styles.exampleCard}>
-            <Text style={styles.exampleTone}>{example.category}</Text>
-            <Text style={styles.exampleLabel}>You say</Text>
-            <Text style={styles.exampleInput}>{example.input}</Text>
-            <Text style={styles.exampleLabel}>Mutter writes</Text>
-            <Text style={styles.exampleOutput}>{example.output}</Text>
-          </View>
-        ))}
-      </ScrollView>
+      </Animated.View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  card: {
-    backgroundColor: "#000000",
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: "#000000",
-    padding: 20,
+  wrap: {
     marginTop: 20,
-  },
-  cardExpanded: {
-    flex: 1,
-    minHeight: 0,
-  },
-  title: {
-    fontSize: 20,
-    color: "#ffffff",
-    letterSpacing: -0.4,
-  },
-  subtitle: {
-    fontSize: 13,
-    lineHeight: 19,
-    color: "#ffffff",
-    marginTop: 4,
-  },
-  button: {
-    marginTop: 16,
-    height: 46,
-    borderRadius: 12,
-    backgroundColor: "#ffffff",
-    alignItems: "center",
+    minHeight: 104,
     justifyContent: "center",
   },
-  buttonDisabled: {
-    opacity: 0.72,
-  },
-  buttonText: {
-    fontSize: 14,
-    color: "#000000",
-  },
-  examplesTitle: {
-    marginTop: 22,
-    fontSize: 16,
-    color: "#ffffff",
-  },
-  examplesScroll: {
-    flex: 1,
-    minHeight: 0,
-    marginTop: 10,
-  },
-  examplesContent: {
-    paddingBottom: 4,
-    gap: 10,
-  },
-  exampleCard: {
-    borderRadius: 14,
-    padding: 14,
-    backgroundColor: "#1b1b1b",
-  },
-  exampleTone: {
-    alignSelf: "flex-start",
-    paddingHorizontal: 9,
-    paddingVertical: 4,
-    borderRadius: 10,
-    backgroundColor: "#ffffff",
-    color: "#000000",
-    fontSize: 11,
-  },
-  exampleLabel: {
-    marginTop: 10,
-    color: "#a8a8a8",
-    fontSize: 11,
+  label: {
+    fontSize: 12,
     textTransform: "uppercase",
-    letterSpacing: 0.5,
+    letterSpacing: 1,
+    color: "rgba(255, 255, 255, 0.55)",
   },
-  exampleInput: {
-    marginTop: 4,
-    color: "#ffffff",
-    fontSize: 14,
-    lineHeight: 20,
+  line: {
+    marginTop: 8,
+    fontSize: 23,
+    lineHeight: 30,
+    color: "rgba(255, 255, 255, 0.88)",
+    letterSpacing: -0.2,
   },
-  exampleOutput: {
-    marginTop: 4,
+  lineOutput: {
     color: "#ffffff",
-    fontSize: 14,
-    lineHeight: 20,
   },
 });

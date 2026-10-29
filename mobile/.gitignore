@@ -31,6 +31,7 @@ yarn-error.*
 *.pem
 
 # local env files
+.env
 .env*.local
 
 # typescript
@@ -45,3 +46,7 @@ yarn-error.*
 
 # build artifacts
 *.apk
+*.keystore
+
+# local release builds + signing key (never commit — see KEYSTORE_INFO.txt)
+release-builds/

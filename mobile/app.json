@@ -2,6 +2,7 @@
   "expo": {
     "name": "Mutter",
     "slug": "mutter",
+    "scheme": "mutter",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/mutter-app-icon.png",
@@ -24,8 +25,19 @@
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
-      "expo-web-browser",
+      [
+        "expo-web-browser",
+        {
+          "experimentalLauncherActivity": false
+        }
+      ],
       "expo-asset"
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "08fc7a47-cb41-479b-9dfc-8d6f879b7daa"
+      }
+    },
+    "owner": "pranshu23xx"
   }
 }

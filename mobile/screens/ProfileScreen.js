@@ -8,7 +8,9 @@ import {
   Text,
   View,
 } from "react-native";
-import { SettingsRow, SoftTouchableOpacity, styles } from "../App";
+import { InitialFlowBackground, SettingsRow, SoftTouchableOpacity, styles } from "../App";
+import { useUsage } from "../auth/UsageContext";
+import { PURCHASES_AVAILABLE_IN_APP } from "../config/storePolicy";
 
 export default function ProfileScreen({
   onBack,
@@ -21,6 +23,7 @@ export default function ProfileScreen({
   const [cycle, setCycle] = useState("monthly");
   const [upgrading, setUpgrading] = useState(false);
   const [payError, setPayError] = useState("");
+  const { usage, limit, remaining, pct, atLimit, loaded: usageLoaded, isMock: usageIsMock } = useUsage();
   const avatarLetter = (email || "M").trim().charAt(0).toUpperCase() || "M";
   const isPro = planLabel === "Pro";
 
@@ -37,6 +40,7 @@ export default function ProfileScreen({
   };
 
   return (
+    <InitialFlowBackground white>
     <SafeAreaView style={styles.accountSafe}>
       <StatusBar style="dark" />
 
@@ -68,7 +72,32 @@ export default function ProfileScreen({
           <SettingsRow title="Account" showChevron onPress={onOpenAccount} />
         </View>
 
-        <View style={profileStyles.pricingCard}>
+        {usageLoaded ? (
+          <View style={profileStyles.usageCard}>
+            <View style={profileStyles.usageRow}>
+              <Text style={profileStyles.usageLabel}>Words remaining today</Text>
+              <Text
+                style={[profileStyles.usageCount, atLimit && profileStyles.usageCountAtLimit]}
+              >
+                {atLimit ? "0" : remaining} left
+              </Text>
+            </View>
+            <View style={profileStyles.usageTrack}>
+              <View
+                style={[
+                  profileStyles.usageFill,
+                  atLimit && profileStyles.usageFillAtLimit,
+                  { width: `${Math.round(pct * 100)}%` },
+                ]}
+              />
+            </View>
+            <Text style={profileStyles.usageSubLabel}>
+              {usage} / {limit} used · resets at midnight UTC{usageIsMock ? " · demo data" : ""}
+            </Text>
+          </View>
+        ) : null}
+
+        {(isPro || PURCHASES_AVAILABLE_IN_APP) && <View style={profileStyles.pricingCard}>
           <Text style={profileStyles.pricingTitle}>{isPro ? "Mutter Pro" : "Upgrade to Pro"}</Text>
           <Text style={profileStyles.pricingBody}>
             {isPro
@@ -116,13 +145,58 @@ export default function ProfileScreen({
               {payError ? <Text style={profileStyles.payError}>{payError}</Text> : null}
             </>
           ) : null}
-        </View>
+        </View>}
       </ScrollView>
     </SafeAreaView>
+    </InitialFlowBackground>
   );
 }
 
 const profileStyles = StyleSheet.create({
+  usageCard: {
+    backgroundColor: "#111111",
+    borderRadius: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    marginTop: 16,
+  },
+  usageRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 8,
+  },
+  usageLabel: {
+    fontSize: 13,
+    color: "rgba(255, 255, 255, 0.72)",
+  },
+  usageCount: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#ffffff",
+  },
+  usageCountAtLimit: {
+    color: "#ff8a80",
+  },
+  usageTrack: {
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: "rgba(255, 255, 255, 0.16)",
+    overflow: "hidden",
+  },
+  usageFill: {
+    height: "100%",
+    borderRadius: 3,
+    backgroundColor: "#ffffff",
+  },
+  usageFillAtLimit: {
+    backgroundColor: "#ff8a80",
+  },
+  usageSubLabel: {
+    fontSize: 11,
+    color: "rgba(255, 255, 255, 0.48)",
+    marginTop: 6,
+  },
   pricingCard: {
     backgroundColor: "#ffffff",
     borderRadius: 22,

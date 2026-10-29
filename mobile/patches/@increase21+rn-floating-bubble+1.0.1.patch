@@ -26,21 +26,34 @@ index 8652af9..c7de30c 100644
    implementation "androidx.core:core-ktx:1.12.0"
  }
 diff --git a/node_modules/@increase21/rn-floating-bubble/android/src/main/AndroidManifest.xml b/node_modules/@increase21/rn-floating-bubble/android/src/main/AndroidManifest.xml
-index abfce0e..731ed04 100644
+index abfce0e..58f585b 100644
 --- a/node_modules/@increase21/rn-floating-bubble/android/src/main/AndroidManifest.xml
 +++ b/node_modules/@increase21/rn-floating-bubble/android/src/main/AndroidManifest.xml
-@@ -9,17 +9,32 @@
+@@ -9,17 +9,45 @@
  
    <!-- Android 14+: declare the foreground service type -->
    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 +  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
++
++  <!-- Required to restart the bubble automatically after a device reboot -->
++  <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
  
    <application>
++    <receiver
++      android:name=".BootReceiver"
++      android:enabled="true"
++      android:exported="true">
++      <intent-filter>
++        <action android:name="android.intent.action.BOOT_COMPLETED" />
++      </intent-filter>
++    </receiver>
++
      <service
        android:name=".FloatingBubbleService"
        android:enabled="true"
        android:exported="false"
 -      android:foregroundServiceType="specialUse">
++      android:stopWithTask="false"
 +      android:foregroundServiceType="specialUse|microphone">
        <property
          android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
@@ -63,6 +76,33 @@ index abfce0e..731ed04 100644
    </application>
  
  </manifest>
+diff --git a/node_modules/@increase21/rn-floating-bubble/android/src/main/java/com/rnfloatingbubble/BootReceiver.kt b/node_modules/@increase21/rn-floating-bubble/android/src/main/java/com/rnfloatingbubble/BootReceiver.kt
+new file mode 100644
+index 0000000..106ee1c
+--- /dev/null
++++ b/node_modules/@increase21/rn-floating-bubble/android/src/main/java/com/rnfloatingbubble/BootReceiver.kt
+@@ -0,0 +1,21 @@
++package com.rnfloatingbubble
++
++import android.content.BroadcastReceiver
++import android.content.Context
++import android.content.Intent
++
++/**
++ * Restarts the floating bubble after a device reboot, if the user had it enabled
++ * before. Reuses FloatingBubbleService's existing prefs-based start logic (the same
++ * path the accessibility service uses to show the bubble for a focused text field) —
++ * it already checks the overlay permission and the stored "enabled" flag before
++ * starting anything, so a reboot on a device where the bubble was never turned on
++ * is a no-op here.
++ */
++class BootReceiver : BroadcastReceiver() {
++    override fun onReceive(context: Context, intent: Intent) {
++        if (intent.action == Intent.ACTION_BOOT_COMPLETED) {
++            FloatingBubbleService.showForTextInput(context)
++        }
++    }
++}
 diff --git a/node_modules/@increase21/rn-floating-bubble/android/src/main/java/com/rnfloatingbubble/FloatingBubbleModule.kt b/node_modules/@increase21/rn-floating-bubble/android/src/main/java/com/rnfloatingbubble/FloatingBubbleModule.kt
 index 39c15a4..8821ee3 100644
 --- a/node_modules/@increase21/rn-floating-bubble/android/src/main/java/com/rnfloatingbubble/FloatingBubbleModule.kt
@@ -201,10 +241,10 @@ index 39c15a4..8821ee3 100644
      private fun isBubbleServiceRunning(): Boolean {
          val manager = reactContext.getSystemService(Context.ACTIVITY_SERVICE)
 diff --git a/node_modules/@increase21/rn-floating-bubble/android/src/main/java/com/rnfloatingbubble/FloatingBubbleService.kt b/node_modules/@increase21/rn-floating-bubble/android/src/main/java/com/rnfloatingbubble/FloatingBubbleService.kt
-index 856d4d7..d0daf7e 100644
+index 856d4d7..2cd9b3e 100644
 --- a/node_modules/@increase21/rn-floating-bubble/android/src/main/java/com/rnfloatingbubble/FloatingBubbleService.kt
 +++ b/node_modules/@increase21/rn-floating-bubble/android/src/main/java/com/rnfloatingbubble/FloatingBubbleService.kt
-@@ -1,12 +1,18 @@
+@@ -1,34 +1,60 @@
  package com.rnfloatingbubble
  
 +import android.Manifest
@@ -218,23 +258,28 @@ index 856d4d7..d0daf7e 100644
  import android.app.Service
 +import android.content.Context
  import android.content.Intent
+-import android.graphics.Bitmap
+-import android.graphics.BitmapFactory
+-import android.graphics.BlurMaskFilter
 +import android.content.pm.PackageManager
 +import android.content.pm.ServiceInfo
- import android.graphics.Bitmap
- import android.graphics.BitmapFactory
- import android.graphics.BlurMaskFilter
-@@ -16,17 +22,35 @@ import android.graphics.Paint
+ import android.graphics.Canvas
+ import android.graphics.Color
+ import android.graphics.Paint
  import android.graphics.PixelFormat
- import android.graphics.PorterDuff
- import android.graphics.PorterDuffXfermode
+-import android.graphics.PorterDuff
+-import android.graphics.PorterDuffXfermode
 +import android.graphics.Typeface
 +import android.graphics.drawable.GradientDrawable
++import android.media.AudioFormat
++import android.media.AudioRecord
++import android.net.Uri
  import android.os.Build
 +import android.os.Handler
  import android.os.IBinder
+-import android.util.Base64
 +import android.os.Looper
 +import android.provider.Settings
- import android.util.Base64
 +import android.util.Log
  import android.util.TypedValue
  import android.view.Gravity
@@ -243,32 +288,44 @@ index 856d4d7..d0daf7e 100644
 +import android.view.ViewGroup
  import android.view.WindowManager
  import android.view.animation.OvershootInterpolator
+-import android.widget.ImageView
++import android.view.animation.PathInterpolator
 +import android.widget.FrameLayout
- import android.widget.ImageView
-+import android.widget.ProgressBar
++import android.widget.LinearLayout
 +import android.widget.TextView
  import androidx.core.app.NotificationCompat
-+import java.io.BufferedReader
-+import java.io.DataOutputStream
-+import java.io.File
-+import java.io.FileInputStream
-+import java.io.InputStreamReader
-+import java.net.HttpURLConnection
-+import java.net.URL
++import java.util.concurrent.TimeUnit
++import okhttp3.OkHttpClient
++import okhttp3.Request
++import okhttp3.Response
++import okhttp3.WebSocket
++import okhttp3.WebSocketListener
++import okio.Buffer
 +import org.json.JSONObject
++import kotlin.math.PI
  import kotlin.math.abs
++import kotlin.math.exp
++import kotlin.math.log10
  import kotlin.math.roundToInt
++import kotlin.math.sin
++import kotlin.math.sqrt
  
-@@ -37,7 +61,7 @@ import kotlin.math.roundToInt
+ /**
+  * Foreground service that renders and manages the floating bubble overlay.
+@@ -37,15 +63,16 @@ import kotlin.math.roundToInt
   * other apps.  Touch handling supports:
   *   - Drag to reposition
   *   - Spring-snap to the nearest screen edge on release
 - *   - Tap to bring the host app to the foreground
 + *   - Tap to expand an in-place listening control
   *
-  * Icon resolution order (first match wins):
-  *   1. Developer-supplied base64 image  (`icon` option)
-@@ -46,6 +70,8 @@ import kotlin.math.roundToInt
+- * Icon resolution order (first match wins):
+- *   1. Developer-supplied base64 image  (`icon` option)
+- *   2. App launcher icon               (`useLauncherIcon = true`, the default)
+- *   3. Filled colour circle            (always available fallback)
++ * Visual design: idle is a squircle with a static waveform-bars glyph; tapping it
++ * expands into three separate shapes in a row — a cancel circle, a pill containing a
++ * live amplitude-reactive waveform (see [WaveformView]), and a finish circle.
   */
  class FloatingBubbleService : Service() {
  
@@ -277,7 +334,7 @@ index 856d4d7..d0daf7e 100644
      // -------------------------------------------------------------------------
      // Companion / constants
      // -------------------------------------------------------------------------
-@@ -56,11 +82,82 @@ class FloatingBubbleService : Service() {
+@@ -56,11 +83,118 @@ class FloatingBubbleService : Service() {
          const val EXTRA_ICON              = "icon"
          const val EXTRA_INITIAL_X         = "initialX"
          const val EXTRA_INITIAL_Y         = "initialY"
@@ -299,6 +356,35 @@ index 856d4d7..d0daf7e 100644
 +        private const val PREF_VOICE_BASE_URL = "voiceBaseUrl"
 +        private const val PREF_VOICE_TOKEN = "voiceToken"
 +        private const val PREF_VOICE_PERSONA = "voicePersona"
++        private const val STREAM_SAMPLE_RATE = 16000
++        private const val MIN_STREAM_BYTES = 9_600L // ~0.3s of 16kHz 16-bit mono PCM — below this, treat as "too short"
++        // Auto-hide the bubble after this long with no interaction (idle, not listening/
++        // processing) — it can always reappear later via showForTextInput, same as after
++        // a manual dismissal.
++        private const val IDLE_TIMEOUT_MS = 30 * 60 * 1000L
++
++        // Bubble visual design: squircle idle glyph, three-shape row while listening/
++        // processing (cancel circle / waveform pill / finish circle) instead of one
++        // long overlapping pill.
++        private const val COLOR_LAVENDER = "#B5ABBD"
++        private const val COLOR_CHARCOAL = "#1E1B24"
++        private const val COLOR_PURPLE   = "#5B3A78"
++        private const val IDLE_SIZE_DP     = 60
++        private const val IDLE_CORNER_DP   = 18
++        private const val CIRCLE_SIZE_DP   = 52
++        private const val PILL_WIDTH_DP    = 130
++        private const val ROW_GAP_DP       = 10
++        private val LISTENING_WIDTH_DP  = CIRCLE_SIZE_DP * 2 + PILL_WIDTH_DP + ROW_GAP_DP * 2
++        private const val LISTENING_HEIGHT_DP = CIRCLE_SIZE_DP
++        private const val PROCESSING_WIDTH_DP = PILL_WIDTH_DP
++        private const val PROCESSING_HEIGHT_DP = CIRCLE_SIZE_DP
++
++        // Motion: one emphasized-decelerate curve for every morph so all transitions
++        // share the same feel; durations tuned so nothing reads as a hard cut.
++        private const val EXPAND_MS   = 360L
++        private const val CONTRACT_MS = 280L
++        private const val COLLAPSE_MS = 320L
++        private const val LABEL_FADE_MS = 140L
 +
 +        fun saveConfiguration(
 +            context: Context,
@@ -347,10 +433,17 @@ index 856d4d7..d0daf7e 100644
 +                prefs.getString(PREF_ICON, null)?.let { putExtra(EXTRA_ICON, it) }
 +            }
 +
-+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-+                context.startForegroundService(intent)
-+            } else {
-+                context.startService(intent)
++            try {
++                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
++                    context.startForegroundService(intent)
++                } else {
++                    context.startService(intent)
++                }
++            } catch (error: Exception) {
++                // startForegroundService can be refused (e.g. background-start
++                // restrictions) — swallow so a missed bubble never crashes the
++                // caller (the accessibility service, which must keep running).
++                Log.e("MutterBubble", "showForTextInput failed to start service", error)
 +            }
 +        }
 +
@@ -360,17 +453,26 @@ index 856d4d7..d0daf7e 100644
      }
  
      // -------------------------------------------------------------------------
-@@ -68,15 +165,28 @@ class FloatingBubbleService : Service() {
+@@ -68,15 +202,51 @@ class FloatingBubbleService : Service() {
      // -------------------------------------------------------------------------
  
      private var windowManager: WindowManager?       = null
 -    private var bubbleView: ImageView?              = null
 +    private var bubbleView: FrameLayout?            = null
-+    private var bubbleImage: ImageView?             = null
++    // Idle state: a squircle with a static waveform-bars glyph.
++    private var idleContainer: FrameLayout?         = null
++    private var idleWaveform: WaveformView?         = null
++    // Listening/processing state: three separate shapes in a row — cancel circle,
++    // waveform pill, finish circle — instead of one long overlapping pill.
++    private var activeRow: LinearLayout?            = null
++    private var cancelCircle: FrameLayout?          = null
++    private var finishCircle: FrameLayout?          = null
++    private var wavePillContainer: FrameLayout?     = null
++    private var waveformView: WaveformView?         = null
 +    private var stateLabel: TextView?               = null
-+    private var spinner: ProgressBar?               = null
-+    private var finishButton: TextView?             = null
      private var params: WindowManager.LayoutParams? = null
++    private var snapAnimator: ValueAnimator?        = null
++    private val emphasized = PathInterpolator(0.2f, 0f, 0f, 1f)
  
      private var bubbleSizeDp     = 60
 -    private var bubbleColor      = Color.parseColor("#4285F4")
@@ -382,16 +484,30 @@ index 856d4d7..d0daf7e 100644
 +    private var bubbleOpacity    = 1f
 +    private var bubbleMode       = BubbleMode.IDLE
 +    private var modeAnimator: ValueAnimator? = null
-+    private var audioRecorder: android.media.MediaRecorder? = null
-+    private var audioFile: File? = null
 +    private val mainHandler = Handler(Looper.getMainLooper())
 +    private var anchoredToLeft = true
++    private var idleTimeoutRunnable: Runnable? = null
++
++    // Live streaming dictation — raw PCM mic capture, relayed to the backend's
++    // /api/speech-stream WebSocket as it's recorded (instead of recording to a
++    // local file and uploading it once finished). See streamHttpClient below.
++    private var audioRecord: AudioRecord? = null
++    private var recordingThread: Thread? = null
++    @Volatile private var isRecording = false
++    @Volatile private var bytesStreamed = 0L
++    // Read/written from both the main thread (touch handling) and OkHttp's WebSocket
++    // callback thread (onMessage/onFailure/onClosed) — both need @Volatile.
++    @Volatile private var streamSocket: WebSocket? = null
++    @Volatile private var streamResultReceived = false
++    private val streamHttpClient: OkHttpClient by lazy {
++        OkHttpClient.Builder().pingInterval(20, TimeUnit.SECONDS).build()
++    }
 +
 +    private enum class BubbleMode { IDLE, LISTENING, PROCESSING }
  
      // -------------------------------------------------------------------------
      // Service lifecycle
-@@ -92,15 +202,32 @@ class FloatingBubbleService : Service() {
+@@ -92,15 +262,37 @@ class FloatingBubbleService : Service() {
      override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
          intent?.let {
              bubbleSizeDp    = it.getIntExtra(EXTRA_SIZE,              60)
@@ -406,7 +522,12 @@ index 856d4d7..d0daf7e 100644
  
 -        // Must call startForeground before doing UI work on API 26+
 -        startForeground(NOTIFICATION_ID, buildNotification())
-+        if (bubbleView != null) return START_STICKY
++        if (bubbleView != null) {
++            // Already showing — a fresh trigger (e.g. re-focusing a text field) counts as
++            // interaction, so restart the idle countdown if it's just sitting idle.
++            if (bubbleMode == BubbleMode.IDLE) scheduleIdleTimeout()
++            return START_STICKY
++        }
 +
 +        // The idle bubble is an overlay service. It must not claim the
 +        // microphone foreground-service type until the user starts dictation.
@@ -427,207 +548,309 @@ index 856d4d7..d0daf7e 100644
          setupBubble()
  
          return START_STICKY
-@@ -108,6 +235,7 @@ class FloatingBubbleService : Service() {
+@@ -108,6 +300,8 @@ class FloatingBubbleService : Service() {
  
      override fun onDestroy() {
          super.onDestroy()
-+        stopAudioRecording(deleteFile = true)
++        stopAudioCapture()
++        closeStreamSocket()
          removeBubble()
      }
  
-@@ -119,12 +247,56 @@ class FloatingBubbleService : Service() {
+@@ -118,13 +312,91 @@ class FloatingBubbleService : Service() {
+     private fun setupBubble() {
          windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
  
-         val sizePx = dp2px(bubbleSizeDp)
+-        val sizePx = dp2px(bubbleSizeDp)
 -        bubbleView = ImageView(this).apply {
+-            elevation = 8f
+-            scaleType = ImageView.ScaleType.CENTER_CROP
++        val idleSizePx = dp2px(IDLE_SIZE_DP)
++        val circleSizePx = dp2px(CIRCLE_SIZE_DP)
++        val pillWidthPx = dp2px(PILL_WIDTH_DP)
++        val rowHeightPx = dp2px(CIRCLE_SIZE_DP)
++        val gapPx = dp2px(ROW_GAP_DP)
++
 +        bubbleView = FrameLayout(this).apply {
-             elevation = 8f
 +            alpha = bubbleOpacity
 +            isSoundEffectsEnabled = false
 +            isHapticFeedbackEnabled = false
+         }
+ 
+-        bubbleView!!.setImageBitmap(resolveIcon(sizePx))
++        // --- Idle: squircle with a static waveform-bars glyph ---
++        idleWaveform = WaveformView(this, barCount = 5, barColor = Color.parseColor(COLOR_CHARCOAL)).apply {
++            setStaticLevels(0.45f, 0.75f, 1.0f, 0.7f, 0.4f)
 +        }
-+        bubbleImage = ImageView(this).apply {
-             scaleType = ImageView.ScaleType.CENTER_CROP
-+            setImageBitmap(resolveIcon(sizePx))
-+            isSoundEffectsEnabled = false
-+            isHapticFeedbackEnabled = false
++        idleContainer = FrameLayout(this).apply {
++            background = squircleBackground()
++            elevation = 4f
++            addView(idleWaveform, FrameLayout.LayoutParams(dp2px(28), dp2px(20), Gravity.CENTER))
 +        }
-+        bubbleView!!.addView(
-+            bubbleImage,
-+            FrameLayout.LayoutParams(sizePx, sizePx, Gravity.CENTER)
-+        )
++        bubbleView!!.addView(idleContainer, FrameLayout.LayoutParams(idleSizePx, idleSizePx, Gravity.CENTER))
 +
++        // --- Listening/processing: cancel circle \u00b7 waveform pill \u00b7 finish circle ---
++        val cancelGlyph = TextView(this).apply {
++            text = "\u2715"
++            setTextColor(Color.parseColor(COLOR_CHARCOAL))
++            textSize = 18f
++            gravity = Gravity.CENTER
++            isSoundEffectsEnabled = false
++        }
++        cancelCircle = FrameLayout(this).apply {
++            background = circleBackground(COLOR_LAVENDER)
++            elevation = 4f
++            addView(cancelGlyph, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
++        }
++
++        waveformView = WaveformView(this, barCount = 9, barColor = Color.parseColor(COLOR_CHARCOAL))
 +        stateLabel = TextView(this).apply {
-+            setTextColor(Color.WHITE)
-+            textSize = 14f
++            setTextColor(Color.parseColor(COLOR_CHARCOAL))
++            textSize = 13f
 +            typeface = Typeface.DEFAULT
++            gravity = Gravity.CENTER
++            maxLines = 1
++            alpha = 0f
++            visibility = View.GONE
++            isSoundEffectsEnabled = false
++        }
++        // The pill clips its children so the waveform is revealed (not squashed) while
++        // the pill's width morphs between the idle squircle and its full size.
++        wavePillContainer = FrameLayout(this).apply {
++            background = pillBackground(COLOR_LAVENDER, CIRCLE_SIZE_DP)
++            elevation = 4f
++            clipChildren = true
++            clipToOutline = true
++            addView(waveformView, FrameLayout.LayoutParams(dp2px(PILL_WIDTH_DP - 24), dp2px(30), Gravity.CENTER))
++            addView(stateLabel, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
++        }
++
++        val finishGlyph = TextView(this).apply {
++            text = "\u2713"
++            setTextColor(Color.WHITE)
++            textSize = 22f
++            gravity = Gravity.CENTER
++            isSoundEffectsEnabled = false
++        }
++        finishCircle = FrameLayout(this).apply {
++            background = circleBackground(COLOR_PURPLE)
++            elevation = 4f
++            addView(finishGlyph, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
++        }
++
++        activeRow = LinearLayout(this).apply {
++            orientation = LinearLayout.HORIZONTAL
 +            gravity = Gravity.CENTER_VERTICAL
 +            visibility = View.GONE
 +            isSoundEffectsEnabled = false
-+        }
-+        bubbleView!!.addView(stateLabel, FrameLayout.LayoutParams(0, sizePx, Gravity.CENTER_VERTICAL))
-+
-+        spinner = ProgressBar(this).apply {
-+            isIndeterminate = true
-+            visibility = View.GONE
-+            isSoundEffectsEnabled = false
-         }
-+        bubbleView!!.addView(
-+            spinner,
-+            FrameLayout.LayoutParams(dp2px(22), dp2px(22), Gravity.END or Gravity.CENTER_VERTICAL)
-+        )
- 
--        bubbleView!!.setImageBitmap(resolveIcon(sizePx))
-+        finishButton = TextView(this).apply {
-+            text = "\u2713"
-+            setTextColor(Color.WHITE)
-+            textSize = 24f
-+            gravity = Gravity.CENTER
-+            visibility = View.GONE
-+            isSoundEffectsEnabled = false
-+            isHapticFeedbackEnabled = false
++            addView(cancelCircle, LinearLayout.LayoutParams(circleSizePx, circleSizePx).apply { marginEnd = gapPx })
++            addView(wavePillContainer, LinearLayout.LayoutParams(pillWidthPx, rowHeightPx).apply { marginEnd = gapPx })
++            addView(finishCircle, LinearLayout.LayoutParams(circleSizePx, circleSizePx))
 +        }
 +        bubbleView!!.addView(
-+            finishButton,
-+            FrameLayout.LayoutParams(dp2px(42), sizePx, Gravity.END or Gravity.CENTER_VERTICAL)
++            activeRow,
++            FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER_VERTICAL or Gravity.START)
 +        )
  
          val windowType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
              WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-@@ -143,16 +315,26 @@ class FloatingBubbleService : Service() {
+@@ -132,8 +404,8 @@ class FloatingBubbleService : Service() {
+             @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE
+ 
+         params = WindowManager.LayoutParams(
+-            sizePx,
+-            sizePx,
++            idleSizePx,
++            idleSizePx,
+             windowType,
+             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                     WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+@@ -143,96 +415,546 @@ class FloatingBubbleService : Service() {
              x = initialX
              y = initialY
          }
 +        anchoredToLeft = initialX < resources.displayMetrics.widthPixels / 2
  
-+        setIdleAppearance(sizePx)
++        setIdleAppearance(idleSizePx)
          windowManager!!.addView(bubbleView, params)
          attachTouchListener()
      }
  
      private fun removeBubble() {
 +        modeAnimator?.cancel()
-+        stopAudioRecording(deleteFile = true)
++        snapAnimator?.cancel()
++        stopAudioCapture()
++        closeStreamSocket()
 +        mainHandler.removeCallbacksAndMessages(null)
++        idleTimeoutRunnable = null
          try {
              bubbleView?.let { windowManager?.removeView(it) }
          } catch (_: Exception) { /* already detached */ }
          bubbleView = null
-+        bubbleImage = null
++        idleContainer = null
++        idleWaveform = null
++        activeRow = null
++        cancelCircle = null
++        finishCircle = null
++        wavePillContainer = null
++        waveformView = null
 +        stateLabel = null
-+        spinner = null
-+        finishButton = null
 +        bubbleMode = BubbleMode.IDLE
      }
  
      // -------------------------------------------------------------------------
-@@ -174,7 +356,7 @@ class FloatingBubbleService : Service() {
-         // 1. Developer-supplied base64 image
-         iconBase64?.let { b64 ->
-             decodeBase64Bitmap(b64)?.let { raw ->
+-    // Icon resolution  (priority: base64 → launcher icon → colour circle)
++    // Touch handling
+     // -------------------------------------------------------------------------
+ 
+-    /**
+-     * Resolves the bubble icon following the three-tier priority:
+-     *
+-     * 1. **Developer base64** — if [iconBase64] is non-null and decodable, it is
+-     *    scaled to [sizePx] × [sizePx] and clipped to a circle.
+-     * 2. **Launcher icon** — if [useLauncherIcon] is true, the app's own launcher
+-     *    icon (as returned by [android.content.pm.PackageManager.getApplicationIcon])
+-     *    is scaled and clipped to a circle.
+-     * 3. **Colour circle** — a simple filled circle in [bubbleColor] with a drop
+-     *    shadow (always succeeds).
+-     */
+-    private fun resolveIcon(sizePx: Int): Bitmap {
+-        // 1. Developer-supplied base64 image
+-        iconBase64?.let { b64 ->
+-            decodeBase64Bitmap(b64)?.let { raw ->
 -                return clipToCircle(scaleBitmap(raw, sizePx))
-+                return clipToCircle(makeLightLogo(scaleBitmap(raw, sizePx)))
-             }
-         }
- 
-@@ -230,18 +412,340 @@ class FloatingBubbleService : Service() {
-     private fun scaleBitmap(src: Bitmap, targetPx: Int): Bitmap =
-         Bitmap.createScaledBitmap(src, targetPx, targetPx, true)
- 
-+    /** Removes the light asset background and turns the Mutter mark light for the dark bubble. */
-+    private fun makeLightLogo(src: Bitmap): Bitmap {
-+        val output = Bitmap.createBitmap(src.width, src.height, Bitmap.Config.ARGB_8888)
-+        for (y in 0 until src.height) {
-+            for (x in 0 until src.width) {
-+                val pixel = src.getPixel(x, y)
-+                val luminance =
-+                    (0.299f * Color.red(pixel)) +
-+                        (0.587f * Color.green(pixel)) +
-+                        (0.114f * Color.blue(pixel))
-+                val darkness = ((190f - luminance) / 190f).coerceIn(0f, 1f)
-+                val alpha = (Color.alpha(pixel) * darkness).roundToInt()
-+                output.setPixel(x, y, Color.argb(alpha, 242, 235, 255))
-+            }
-+        }
-+        return output
-+    }
-+
-     // -------------------------------------------------------------------------
-     // Touch handling
-     // -------------------------------------------------------------------------
- 
 +    private fun setIdleAppearance(sizePx: Int) {
 +        bubbleMode = BubbleMode.IDLE
-+        bubbleView?.background = roundedBackground("#2B1F3A", "#65477F")
-+        stateLabel?.visibility = View.GONE
-+        spinner?.visibility = View.GONE
-+        finishButton?.visibility = View.GONE
-+        bubbleImage?.rotation = 0f
-+
-+        bubbleImage?.layoutParams = FrameLayout.LayoutParams(sizePx, sizePx, Gravity.CENTER)
++        idleContainer?.apply {
++            visibility = View.VISIBLE
++            alpha = 1f
++            scaleX = 1f
++            scaleY = 1f
++            pivotX = sizePx / 2f
++            pivotY = sizePx / 2f
++        }
++        activeRow?.visibility = View.GONE
++        waveformView?.setMode(WaveformView.Mode.STATIC)
++        scheduleIdleTimeout()
 +    }
 +
-+    private fun setListeningAppearance() {
-+        bubbleView?.background = roundedBackground("#2B1F3A", "#65477F")
-+        stateLabel?.let {
-+            it.text = "Listening"
-+            it.visibility = View.VISIBLE
++    /** Starts (or restarts) the 30-minute no-interaction countdown; only meaningful
++     *  while actually idle — [cancelIdleTimeout] is called the moment that changes. */
++    private fun scheduleIdleTimeout() {
++        cancelIdleTimeout()
++        val runnable = Runnable {
++            Log.d(debugTag, "idle timeout reached with no interaction, stopping bubble")
++            stopSelf()
 +        }
-+        spinner?.visibility = View.GONE
-+        finishButton?.visibility = View.VISIBLE
-+        configureExpandedChildren()
++        idleTimeoutRunnable = runnable
++        mainHandler.postDelayed(runnable, IDLE_TIMEOUT_MS)
 +    }
 +
-+    private fun setProcessingAppearance() {
-+        bubbleView?.background = roundedBackground("#2B1F3A", "#65477F")
-+        stateLabel?.let {
-+            it.text = "Processing"
-+            it.visibility = View.VISIBLE
-+        }
-+        spinner?.visibility = View.VISIBLE
-+        finishButton?.visibility = View.GONE
-+        configureExpandedChildren()
++    private fun cancelIdleTimeout() {
++        idleTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
++        idleTimeoutRunnable = null
 +    }
 +
-+    private fun configureExpandedChildren() {
-+        val imageSize = dp2px(42)
-+        bubbleImage?.layoutParams = FrameLayout.LayoutParams(
-+            imageSize,
-+            imageSize,
-+            Gravity.START or Gravity.CENTER_VERTICAL
-+        ).apply {
-+            leftMargin = dp2px(8)
++    /** Crossfades the pill between the waveform and a short status message (null brings
++     *  the waveform back) instead of swapping them in a single frame. */
++    private fun setLabel(text: String?) {
++        val label = stateLabel ?: return
++        val wave = waveformView ?: return
++        label.animate().cancel()
++        wave.animate().cancel()
++
++        if (text == null) {
++            label.animate().alpha(0f).setDuration(LABEL_FADE_MS)
++                .withEndAction { label.visibility = View.GONE }.start()
++            wave.visibility = View.VISIBLE
++            wave.animate().alpha(1f).setDuration(LABEL_FADE_MS).start()
++            return
 +        }
-+        stateLabel?.layoutParams = FrameLayout.LayoutParams(
-+            ViewGroup.LayoutParams.MATCH_PARENT,
-+            ViewGroup.LayoutParams.MATCH_PARENT,
-+            Gravity.CENTER_VERTICAL
-+        ).apply {
-+            leftMargin = dp2px(58)
-+            rightMargin = dp2px(42)
-+        }
-+        spinner?.layoutParams = FrameLayout.LayoutParams(
-+            dp2px(22),
-+            dp2px(22),
-+            Gravity.END or Gravity.CENTER_VERTICAL
-+        ).apply {
-+            rightMargin = dp2px(12)
-+        }
-+        finishButton?.layoutParams = FrameLayout.LayoutParams(
-+            dp2px(42),
-+            ViewGroup.LayoutParams.MATCH_PARENT,
-+            Gravity.END or Gravity.CENTER_VERTICAL
-+        ).apply {
-+            rightMargin = dp2px(4)
++
++        wave.animate().alpha(0f).setDuration(LABEL_FADE_MS).start()
++        if (label.visibility == View.VISIBLE && label.alpha > 0f && label.text.toString() != text) {
++            label.animate().alpha(0f).setDuration(LABEL_FADE_MS / 2).withEndAction {
++                label.text = text
++                label.animate().alpha(1f).setDuration(LABEL_FADE_MS).start()
++            }.start()
++        } else {
++            label.text = text
++            label.visibility = View.VISIBLE
++            label.animate().alpha(1f).setDuration(LABEL_FADE_MS).start()
 +        }
 +    }
 +
-+    private fun roundedBackground(fill: String, stroke: String): GradientDrawable =
++    /** Shows a short status message in the pill instead of the waveform (e.g. a
++     *  permission/config error caught before recording actually started). */
++    private fun showPillMessage(text: String) {
++        waveformView?.setMode(WaveformView.Mode.STATIC)
++        setLabel(text)
++    }
++
++    /** Pins the idle squircle and the active row to the edge the bubble is docked on,
++     *  so morphs grow out of / shrink back into that edge instead of sliding sideways. */
++    private fun alignToAnchor() {
++        val horizontal = if (anchoredToLeft) Gravity.START else Gravity.END
++        listOf<View?>(idleContainer, activeRow).forEach { candidate ->
++            val view = candidate ?: return@forEach
++            val lp = view.layoutParams as? FrameLayout.LayoutParams ?: return@forEach
++            lp.gravity = horizontal or Gravity.CENTER_VERTICAL
++            view.layoutParams = lp
++        }
++        val idleSize = dp2px(IDLE_SIZE_DP).toFloat()
++        idleContainer?.pivotX = if (anchoredToLeft) 0f else idleSize
++        idleContainer?.pivotY = idleSize / 2f
++    }
++
++    /** Lays out one frame of the active row: [sideFrac] grows the cancel/finish circles
++     *  (and their gaps) from nothing to full size, [pillWidthPx] sizes the pill. Returns
++     *  the row's total width so the window can be sized to match it exactly. */
++    private fun applyRowFrame(sideFrac: Float, pillWidthPx: Int): Int {
++        val f = sideFrac.coerceIn(0f, 1f)
++        val side = (dp2px(CIRCLE_SIZE_DP) * f).roundToInt()
++        val gap = (dp2px(ROW_GAP_DP) * f).roundToInt()
++        cancelCircle?.let { circle ->
++            val lp = circle.layoutParams as LinearLayout.LayoutParams
++            lp.width = side
++            lp.height = side
++            lp.marginEnd = gap
++            circle.layoutParams = lp
++            circle.alpha = f
++        }
++        finishCircle?.let { circle ->
++            val lp = circle.layoutParams as LinearLayout.LayoutParams
++            lp.width = side
++            lp.height = side
++            circle.layoutParams = lp
++            circle.alpha = f
++        }
++        wavePillContainer?.let { pill ->
++            val lp = pill.layoutParams as LinearLayout.LayoutParams
++            lp.width = pillWidthPx
++            lp.marginEnd = gap
++            pill.layoutParams = lp
++        }
++        return side * 2 + gap * 2 + pillWidthPx
++    }
++
++    private fun squircleBackground(): GradientDrawable =
++        GradientDrawable().apply {
++            shape = GradientDrawable.RECTANGLE
++            setColor(Color.parseColor(COLOR_LAVENDER))
++            cornerRadius = dp2px(IDLE_CORNER_DP).toFloat()
++        }
++
++    private fun circleBackground(fill: String): GradientDrawable =
++        GradientDrawable().apply {
++            shape = GradientDrawable.OVAL
++            setColor(Color.parseColor(fill))
++        }
++
++    private fun pillBackground(fill: String, heightDp: Int): GradientDrawable =
 +        GradientDrawable().apply {
 +            shape = GradientDrawable.RECTANGLE
 +            setColor(Color.parseColor(fill))
-+            cornerRadius = dp2px(30).toFloat()
-+            setStroke(dp2px(1), Color.parseColor(stroke))
++            cornerRadius = dp2px(heightDp / 2).toFloat()
 +        }
 +
 +    private fun handleBubbleTap() {
@@ -638,73 +861,296 @@ index 856d4d7..d0daf7e 100644
 +        }
 +    }
 +
++    /** Idle squircle -> [cancel · waveform · finish]: the pill grows out of the squircle
++     *  while the two circles inflate beside it, all in one continuous morph. */
 +    private fun beginListening() {
 +        bubbleMode = BubbleMode.LISTENING
-+        setListeningAppearance()
-+        animateToMode(220, 60)
++        cancelIdleTimeout()
++        val idle = idleContainer ?: return
++        val row = activeRow ?: return
++        val idleSize = dp2px(IDLE_SIZE_DP)
++        val pillFull = dp2px(PILL_WIDTH_DP)
++
++        alignToAnchor()
++        idle.animate().cancel()
++        // Continue from wherever the press-feedback dip left the squircle, not from 1.0.
++        val idleStartScale = idle.scaleX
++        stateLabel?.apply {
++            animate().cancel()
++            alpha = 0f
++            visibility = View.GONE
++        }
++        waveformView?.apply {
++            animate().cancel()
++            alpha = 1f
++            visibility = View.VISIBLE
++            setMode(WaveformView.Mode.LIVE)
++        }
++        wavePillContainer?.alpha = 1f
++        applyRowFrame(0f, idleSize)
++        row.visibility = View.VISIBLE
++
++        morphWindow(EXPAND_MS, dp2px(LISTENING_HEIGHT_DP), frame = { p ->
++            idle.alpha = (1f - p * 2.5f).coerceAtLeast(0f)
++            idle.scaleX = idleStartScale * (1f - 0.15f * p)
++            idle.scaleY = idle.scaleX
++            applyRowFrame(p, lerp(idleSize, pillFull, p))
++        }, onEnd = { idle.visibility = View.GONE })
 +        startSpeechRecognition()
++    }
++
++    /** [cancel · waveform · finish] -> waveform pill alone: the circles deflate into it. */
++    private fun contractToPill() {
++        val pillFull = dp2px(PILL_WIDTH_DP)
++        alignToAnchor()
++        // A fast finish/cancel can interrupt the expand morph before its onEnd hides the
++        // squircle — make sure it can't linger half-faded under the row.
++        idleContainer?.visibility = View.GONE
++        morphWindow(CONTRACT_MS, dp2px(PROCESSING_HEIGHT_DP), frame = { p ->
++            applyRowFrame(1f - p, pillFull)
++        })
 +    }
 +
 +    private fun finishListening() {
 +        if (bubbleMode != BubbleMode.LISTENING) return
-+        val recorded = stopAudioRecording(deleteFile = false)
++        val hadEnoughAudio = bytesStreamed >= MIN_STREAM_BYTES
++        stopAudioCapture()
 +        bubbleMode = BubbleMode.PROCESSING
-+        setProcessingAppearance()
++        waveformView?.setMode(WaveformView.Mode.THINKING)
++        contractToPill()
 +
-+        if (!recorded) {
-+            stateLabel?.text = "Too short"
++        val socket = streamSocket
++        if (!hadEnoughAudio || socket == null) {
++            // Keep a setup error (e.g. "Sign in required") on screen rather than
++            // replacing it with a misleading "Too short".
++            val showingSetupError = socket == null && stateLabel?.visibility == View.VISIBLE
++            if (!showingSetupError) setLabel("Too short")
++            closeStreamSocket()
 +            mainHandler.postDelayed({ collapseAfterProcessing() }, 1600L)
 +            return
 +        }
-+        uploadRecording()
++        socket.send("""{"type":"stop"}""")
 +    }
 +
++    private fun cancelListening() {
++        if (bubbleMode != BubbleMode.LISTENING) return
++        stopAudioCapture()
++        closeStreamSocket()
++        bubbleMode = BubbleMode.PROCESSING
++        waveformView?.setMode(WaveformView.Mode.STATIC)
++        setLabel("Cancelled")
++        contractToPill()
++        mainHandler.postDelayed({ collapseAfterProcessing() }, 700L)
++    }
++
++    /** Waveform pill -> idle squircle: the pill shrinks and fades as the squircle
++     *  scales back in underneath it. */
 +    private fun collapseAfterProcessing() {
 +        if (bubbleMode != BubbleMode.PROCESSING) return
-+        animateToMode(bubbleSizeDp, bubbleSizeDp) {
-+            setIdleAppearance(dp2px(bubbleSizeDp))
++        val idle = idleContainer ?: return
++        val pill = wavePillContainer
++        val idleSize = dp2px(IDLE_SIZE_DP)
++        val startPill = pill?.layoutParams?.width ?: dp2px(PILL_WIDTH_DP)
++
++        alignToAnchor()
++        idle.apply {
++            animate().cancel()
++            visibility = View.VISIBLE
++            alpha = 0f
++            scaleX = 0.85f
++            scaleY = 0.85f
 +        }
++        morphWindow(COLLAPSE_MS, idleSize, frame = { p ->
++            pill?.alpha = (1f - p * 1.6f).coerceAtLeast(0f)
++            val q = ((p - 0.35f) / 0.65f).coerceIn(0f, 1f)
++            idle.alpha = q
++            idle.scaleX = 0.85f + 0.15f * q
++            idle.scaleY = idle.scaleX
++            maxOf(applyRowFrame(0f, lerp(startPill, idleSize, p)), idleSize)
++        }, onEnd = { setIdleAppearance(idleSize) })
 +    }
 +
 +    private fun startSpeechRecognition() {
 +        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M &&
 +            checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED
 +        ) {
-+            stateLabel?.text = "Tap to finish"
++            showPillMessage("Tap to finish")
 +            return
 +        }
 +
 +        if (!promoteToMicrophoneForeground()) {
-+            stateLabel?.text = "Microphone unavailable"
++            showPillMessage("Microphone unavailable")
 +            return
 +        }
 +
-+        try {
-+            audioFile = File(cacheDir, "mutter-${System.currentTimeMillis()}.m4a")
-+            audioRecorder = android.media.MediaRecorder(this).apply {
-+                setAudioSource(android.media.MediaRecorder.AudioSource.MIC)
-+                setOutputFormat(android.media.MediaRecorder.OutputFormat.MPEG_4)
-+                setAudioEncoder(android.media.MediaRecorder.AudioEncoder.AAC)
-+                setAudioSamplingRate(44100)
-+                setAudioEncodingBitRate(128000)
-+                setAudioChannels(1)
-+                setOutputFile(audioFile!!.absolutePath)
-+                prepare()
-+                start()
-+            }
-+            stateLabel?.text = "Recording..."
-+            Log.d(debugTag, "recording started: ${audioFile?.absolutePath}")
-+        } catch (error: Exception) {
-+            audioRecorder = null
-+            audioFile = null
-+            Log.e(debugTag, "recording start failed", error)
-+            stateLabel?.text = "Mic error"
++        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
++        val baseUrl = prefs.getString(PREF_VOICE_BASE_URL, null)
++        val token = prefs.getString(PREF_VOICE_TOKEN, null)
++        val persona = prefs.getString(PREF_VOICE_PERSONA, "Work") ?: "Work"
++        if (baseUrl.isNullOrBlank() || token.isNullOrBlank()) {
++            showPillMessage("Sign in required")
++            return
 +        }
++
++        // http(s):// -> ws(s):// — e.g. "https://api.example.com" -> "wss://api.example.com"
++        val wsUrl = baseUrl.trimEnd('/').replaceFirst(Regex("^http"), "ws") +
++            "/api/speech-stream?persona=" + Uri.encode(persona)
++
++        val request = Request.Builder()
++            .url(wsUrl)
++            .addHeader("Authorization", "Bearer $token")
++            .build()
++
++        streamResultReceived = false
++        bytesStreamed = 0L
++        streamSocket = streamHttpClient.newWebSocket(request, object : WebSocketListener() {
++            override fun onOpen(webSocket: WebSocket, response: Response) {
++                beginAudioCapture(webSocket)
++            }
++
++            override fun onMessage(webSocket: WebSocket, text: String) {
++                handleStreamMessage(text)
+             }
++
++            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
++                Log.e(debugTag, "stream failure", t)
++                if (!streamResultReceived) {
++                    streamResultReceived = true
++                    mainHandler.post { handleStreamFailure("Translation failed") }
++                }
++            }
++
++            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
++                if (!streamResultReceived) {
++                    streamResultReceived = true
++                    mainHandler.post { handleStreamFailure("Translation failed") }
++                }
++            }
++        })
++        Log.d(debugTag, "stream connecting: $wsUrl")
 +    }
 +
++    /** Starts the raw-PCM capture loop and relays each buffer read straight to [webSocket]. */
++    private fun beginAudioCapture(webSocket: WebSocket) {
++        val minBufferSize = AudioRecord.getMinBufferSize(
++            STREAM_SAMPLE_RATE,
++            AudioFormat.CHANNEL_IN_MONO,
++            AudioFormat.ENCODING_PCM_16BIT
++        )
++        if (minBufferSize <= 0) {
++            Log.e(debugTag, "AudioRecord.getMinBufferSize failed: $minBufferSize")
++            mainHandler.post { handleStreamFailure("Mic error") }
++            return
+         }
++        val bufferSize = minBufferSize * 2
+ 
+-        // 2. App launcher icon
+-        if (useLauncherIcon) {
+-            getLauncherIconBitmap(sizePx)?.let { return clipToCircle(it) }
++        val record = try {
++            AudioRecord(
++                android.media.MediaRecorder.AudioSource.MIC,
++                STREAM_SAMPLE_RATE,
++                AudioFormat.CHANNEL_IN_MONO,
++                AudioFormat.ENCODING_PCM_16BIT,
++                bufferSize
++            )
++        } catch (error: Exception) {
++            Log.e(debugTag, "AudioRecord init failed", error)
++            mainHandler.post { handleStreamFailure("Mic error") }
++            return
+         }
+ 
+-        // 3. Coloured circle fallback
+-        return buildColoredCircle(sizePx, bubbleColor)
++        if (record.state != AudioRecord.STATE_INITIALIZED) {
++            Log.e(debugTag, "AudioRecord not initialized")
++            record.release()
++            mainHandler.post { handleStreamFailure("Mic error") }
++            return
++        }
++
++        audioRecord = record
++        isRecording = true
++        record.startRecording()
++
++        recordingThread = Thread {
++            val buffer = ByteArray(bufferSize)
++            while (isRecording) {
++                val read = record.read(buffer, 0, buffer.size)
++                if (read > 0) {
++                    bytesStreamed += read
++                    webSocket.send(Buffer().write(buffer, 0, read).readByteString())
++
++                    // RMS loudness of this chunk's 16-bit little-endian PCM samples, mapped
++                    // from roughly -50..-10 dBFS onto 0..1. RMS on a dB scale tracks how
++                    // loud speech *sounds*, so the waveform moves evenly instead of
++                    // spiking on single peaks the way raw peak amplitude does.
++                    var sumSquares = 0.0
++                    var samples = 0
++                    var i = 0
++                    while (i + 1 < read) {
++                        val sample = ((buffer[i + 1].toInt() shl 8) or (buffer[i].toInt() and 0xFF)).toShort().toInt()
++                        sumSquares += sample.toDouble() * sample
++                        samples++
++                        i += 2
++                    }
++                    val rms = if (samples > 0) sqrt(sumSquares / samples) / 32767.0 else 0.0
++                    val db = if (rms > 0.0) 20.0 * log10(rms) else -100.0
++                    val level = ((db + 50.0) / 40.0).toFloat().coerceIn(0f, 1f)
++                    mainHandler.post { waveformView?.pushAmplitude(level) }
++                }
++            }
++        }.apply { start() }
+     }
+ 
+-    /**
+-     * Retrieves the app's launcher icon as a [Bitmap] scaled to [sizePx].
+-     * Returns null on any failure so the caller can fall through gracefully.
+-     */
+-    private fun getLauncherIconBitmap(sizePx: Int): Bitmap? {
+-        return try {
+-            val drawable = packageManager.getApplicationIcon(packageName)
+-            val bitmap   = Bitmap.createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888)
+-            val canvas   = Canvas(bitmap)
+-            drawable.setBounds(0, 0, sizePx, sizePx)
+-            drawable.draw(canvas)
+-            bitmap
+-        } catch (_: Exception) {
+-            null
++    private fun stopAudioCapture() {
++        isRecording = false
++        try { recordingThread?.join(500) } catch (_: InterruptedException) { /* best effort */ }
++        recordingThread = null
++        audioRecord?.let {
++            try { it.stop() } catch (error: Exception) {
++                Log.e(debugTag, "AudioRecord stop failed", error)
++            }
++            it.release()
+         }
++        audioRecord = null
++        Log.d(debugTag, "recording stopped: bytesStreamed=$bytesStreamed")
++    }
++
++    private fun closeStreamSocket() {
++        streamSocket?.close(1000, "done")
++        streamSocket = null
+     }
+ 
+-    /**
+-     * Clips [src] to a circle using a Porter-Duff DST_IN mask so the result
+-     * has a transparent background outside the circle boundary.
+-     */
+-    private fun clipToCircle(src: Bitmap): Bitmap {
+-        val size   = minOf(src.width, src.height)
+-        val output = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+-        val canvas = Canvas(output)
 +    private fun promoteToMicrophoneForeground(): Boolean {
 +        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return true
-+
+ 
+-        // Draw a solid white circle as a mask
+-        val maskPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+-        canvas.drawCircle(size / 2f, size / 2f, size / 2f, maskPaint)
 +        return try {
 +            val foregroundServiceType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
 +                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE or
@@ -718,138 +1164,101 @@ index 856d4d7..d0daf7e 100644
 +            false
 +        }
 +    }
-+
-+    private fun stopAudioRecording(deleteFile: Boolean): Boolean {
-+        var recorded = audioFile != null
-+        audioRecorder?.let {
-+            try { it.stop() } catch (error: Exception) {
-+                recorded = false
-+                Log.e(debugTag, "recording stop failed", error)
-+            }
-+            it.release()
-+        }
-+        audioRecorder = null
-+        val bytes = audioFile?.length() ?: 0
-+        if (bytes <= 0) recorded = false
-+        Log.d(debugTag, "recording stopped: file=${audioFile?.absolutePath}, bytes=$bytes")
-+        if (deleteFile || !recorded) {
-+            audioFile?.delete()
-+            audioFile = null
-+        }
-+        return recorded
-+    }
-+
-+    private fun uploadRecording() {
-+        val file = audioFile ?: run {
-+            stateLabel?.text = "No audio"
-+            mainHandler.postDelayed({ collapseAfterProcessing() }, 1600L)
+ 
+-        // Draw the source bitmap restricted to the circle
+-        val imagePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+-            xfermode = PorterDuffXfermode(PorterDuff.Mode.SRC_IN)
++    /** Handles a `{"type":"result"|"error", ...}` text frame from the backend. */
++    private fun handleStreamMessage(text: String) {
++        val json = try { JSONObject(text) } catch (error: Exception) {
++            Log.e(debugTag, "unparseable stream message: $text", error)
 +            return
 +        }
-+        if (file.length() < 1024) {
-+            stateLabel?.text = "Too short"
-+            file.delete()
-+            audioFile = null
-+            mainHandler.postDelayed({ collapseAfterProcessing() }, 1600L)
-+            return
-+        }
-+        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-+        val baseUrl = prefs.getString(PREF_VOICE_BASE_URL, null)
-+        val token = prefs.getString(PREF_VOICE_TOKEN, null)
-+        val persona = prefs.getString(PREF_VOICE_PERSONA, "Work") ?: "Work"
-+        if (baseUrl.isNullOrBlank() || token.isNullOrBlank()) {
-+            stateLabel?.text = "Sign in required"
-+            file.delete()
-+            audioFile = null
-+            mainHandler.postDelayed({ collapseAfterProcessing() }, 1600L)
-+            return
-+        }
-+
-+        Thread {
-+            var connection: HttpURLConnection? = null
-+            try {
-+                mainHandler.post { stateLabel?.text = "Uploading..." }
-+                Log.d(debugTag, "upload started: bytes=${file.length()}, persona=$persona, url=$baseUrl/api/speech-to-text-translate")
-+                val boundary = "----Mutter${System.currentTimeMillis()}"
-+                connection = (URL("$baseUrl/api/speech-to-text-translate").openConnection() as HttpURLConnection).apply {
-+                    requestMethod = "POST"
-+                    doOutput = true
-+                    connectTimeout = 15_000
-+                    readTimeout = 60_000
-+                    setRequestProperty("Authorization", "Bearer $token")
-+                    setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
-+                }
-+                DataOutputStream(connection.outputStream).use { output ->
-+                    output.writeBytes("--$boundary\r\n")
-+                    output.writeBytes("Content-Disposition: form-data; name=\"persona\"\r\n\r\n$persona\r\n")
-+                    output.writeBytes("--$boundary\r\n")
-+                    output.writeBytes("Content-Disposition: form-data; name=\"file\"; filename=\"mutter.m4a\"\r\n")
-+                    output.writeBytes("Content-Type: audio/mp4\r\n\r\n")
-+                    FileInputStream(file).use { it.copyTo(output) }
-+                    output.writeBytes("\r\n--$boundary--\r\n")
-+                }
-+                val body = BufferedReader(InputStreamReader(if (connection.responseCode in 200..299) connection.inputStream else connection.errorStream)).use { it.readText() }
-+                if (connection.responseCode in 200..299) {
-+                    val translated = runCatching { JSONObject(body).optString("parsedOutput") }.getOrNull()
-+                    val transcript = runCatching { JSONObject(body).optString("transcript") }.getOrNull()
-+                    Log.d(debugTag, "upload succeeded: status=${connection.responseCode}, transcript=$transcript, parsedOutput=$translated")
-+                    if (!translated.isNullOrBlank()) {
++        when (json.optString("type")) {
++            "result" -> {
++                streamResultReceived = true
++                val translated = json.optString("parsedOutput").takeIf { it.isNotBlank() }
++                val transcript = json.optString("transcript")
++                Log.d(debugTag, "stream result: transcript=$transcript, parsedOutput=$translated")
++                mainHandler.post {
++                    if (translated != null) {
 +                        sendBroadcast(Intent(MutterTextInputAccessibilityService.ACTION_TRANSLATION_READY).apply {
 +                            setPackage(packageName)
 +                            putExtra(MutterTextInputAccessibilityService.EXTRA_TRANSLATION, translated)
 +                        })
-+                        mainHandler.post { stateLabel?.text = "Done" }
++                        setLabel("Done")
 +                        mainHandler.postDelayed({ collapseAfterProcessing() }, 900L)
 +                    } else {
-+                        Log.e(debugTag, "successful response had no parsedOutput: $body")
-+                        mainHandler.post { stateLabel?.text = "No translation" }
++                        setLabel("No translation")
 +                        mainHandler.postDelayed({ collapseAfterProcessing() }, 1800L)
 +                    }
-+                } else {
-+                    val serverMessage = runCatching { JSONObject(body).optString("message").ifBlank { JSONObject(body).optString("error") } }.getOrNull()
-+                    Log.e(debugTag, "upload failed: status=${connection.responseCode}, body=$body")
-+                    mainHandler.post { stateLabel?.text = serverMessage ?: "Translation failed" }
-+                    mainHandler.postDelayed({ collapseAfterProcessing() }, 2200L)
 +                }
-+            } catch (error: Exception) {
-+                Log.e(debugTag, "upload exception", error)
-+                mainHandler.post { stateLabel?.text = "Translation failed" }
-+                mainHandler.postDelayed({ collapseAfterProcessing() }, 2200L)
-+            } finally {
-+                connection?.disconnect()
-+                file.delete()
-+                audioFile = null
++                streamSocket = null
 +            }
-+        }.start()
++            "error" -> {
++                streamResultReceived = true
++                val message = json.optString("message").ifBlank { "Translation failed" }
++                Log.e(debugTag, "stream error: $message")
++                mainHandler.post { handleStreamFailure(message) }
++            }
+         }
+-        canvas.drawBitmap(src, 0f, 0f, imagePaint)
 +    }
-+
-+    private fun animateToMode(targetWidthDp: Int, targetHeightDp: Int, onEnd: (() -> Unit)? = null) {
+ 
+-        return output
++    private fun handleStreamFailure(message: String) {
++        waveformView?.setMode(WaveformView.Mode.STATIC)
++        setLabel(message)
++        mainHandler.postDelayed({ collapseAfterProcessing() }, 2200L)
++        streamSocket = null
+     }
+ 
+-    /** Scales [src] to exactly [targetPx] × [targetPx]. */
+-    private fun scaleBitmap(src: Bitmap, targetPx: Int): Bitmap =
+-        Bitmap.createScaledBitmap(src, targetPx, targetPx, true)
++    /** Drives one state morph. [frame] lays out the content for progress p (0..1) and
++     *  returns its width; the overlay window is sized and positioned to that same width
++     *  on the same frame, so the window never clips, lags or overshoots its content.
++     *  The docked edge stays pinned and the vertical centre stays put. */
++    private fun morphWindow(
++        durationMs: Long,
++        targetHeight: Int,
++        frame: (Float) -> Int,
++        onEnd: (() -> Unit)? = null,
++    ) {
 +        val layout = params ?: return
-+        val startWidth = layout.width
-+        val startHeight = layout.height
-+        val targetWidth = dp2px(targetWidthDp)
-+        val targetHeight = dp2px(targetHeightDp)
 +        val screenWidth = resources.displayMetrics.widthPixels
-+        val targetX = if (anchoredToLeft) 0 else (screenWidth - targetWidth).coerceAtLeast(0)
-+        val startX = layout.x
-+        val startY = layout.y
-+        val targetY = (startY - (targetHeight - startHeight) / 2)
-+            .coerceIn(0, (resources.displayMetrics.heightPixels - targetHeight).coerceAtLeast(0))
-+
++        val screenHeight = resources.displayMetrics.heightPixels
++        val startLeft = layout.x
++        val startRight = layout.x + layout.width
++        val startHeight = layout.height
++        val centerY = layout.y + layout.height / 2
+ 
+-    // -------------------------------------------------------------------------
+-    // Touch handling
+-    // -------------------------------------------------------------------------
++        snapAnimator?.cancel()
 +        modeAnimator?.cancel()
 +        modeAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
-+            duration = 260L
-+            interpolator = android.view.animation.DecelerateInterpolator()
++            duration = durationMs
++            interpolator = emphasized
 +            addUpdateListener { animator ->
 +                val progress = animator.animatedValue as Float
-+                layout.width = lerp(startWidth, targetWidth, progress)
-+                layout.height = lerp(startHeight, targetHeight, progress)
-+                layout.x = lerp(startX, targetX, progress)
-+                layout.y = lerp(startY, targetY, progress)
++                val width = frame(progress)
++                val height = lerp(startHeight, targetHeight, progress)
++                val x = if (anchoredToLeft) lerp(startLeft, 0, progress)
++                        else lerp(startRight, screenWidth, progress) - width
++                layout.width = width
++                layout.height = height
++                layout.x = x.coerceIn(0, (screenWidth - width).coerceAtLeast(0))
++                layout.y = (centerY - height / 2).coerceIn(0, (screenHeight - height).coerceAtLeast(0))
 +                safeUpdateLayout()
 +            }
 +            addListener(object : AnimatorListenerAdapter() {
++                private var cancelled = false
++                override fun onAnimationCancel(animation: Animator) { cancelled = true }
 +                override fun onAnimationEnd(animation: Animator) {
-+                    onEnd?.invoke()
++                    if (!cancelled) onEnd?.invoke()
 +                }
 +            })
 +            start()
@@ -858,80 +1267,165 @@ index 856d4d7..d0daf7e 100644
 +
 +    private fun lerp(start: Int, end: Int, progress: Float): Int =
 +        (start + (end - start) * progress).roundToInt()
-+
+ 
      private fun attachTouchListener() {
          var downParamsX = 0
-         var downParamsY = 0
+@@ -240,34 +962,94 @@ class FloatingBubbleService : Service() {
          var downRawX    = 0f
          var downRawY    = 0f
          var isDragging  = false
 +        var finishingPress = false
++        var cancelingPress = false
++        var pressedView: View? = null
++        val touchSlop = dp2px(6)
++
++        // Tactile press feedback: the touched shape dips slightly on press and springs
++        // back on release, so taps feel acknowledged before the morph starts.
++        fun pressIn(target: View?) {
++            pressedView = target
++            target?.animate()?.scaleX(0.9f)?.scaleY(0.9f)?.setDuration(90L)
++                ?.setInterpolator(emphasized)?.start()
++        }
++        fun pressOut() {
++            pressedView?.animate()?.scaleX(1f)?.scaleY(1f)?.setDuration(240L)
++                ?.setInterpolator(OvershootInterpolator(2.5f))?.start()
++            pressedView = null
++        }
  
--        bubbleView?.setOnTouchListener { _: View, event: MotionEvent ->
-+        bubbleView?.setOnTouchListener { view: View, event: MotionEvent ->
-             when (event.action) {
+         bubbleView?.setOnTouchListener { _: View, event: MotionEvent ->
+-            when (event.action) {
++            when (event.actionMasked) {
                  MotionEvent.ACTION_DOWN -> {
++                    // Grabbing the bubble mid-snap takes over from the snap animation.
++                    snapAnimator?.cancel()
                      downParamsX = params?.x ?: 0
-@@ -249,6 +753,8 @@ class FloatingBubbleService : Service() {
+                     downParamsY = params?.y ?: 0
                      downRawX    = event.rawX
                      downRawY    = event.rawY
                      isDragging  = false
 +                    finishingPress = bubbleMode == BubbleMode.LISTENING &&
-+                            isInsideFinishButton(view, event.x, event.y)
++                            isInsideChild(finishCircle, event.x, event.y)
++                    cancelingPress = bubbleMode == BubbleMode.LISTENING &&
++                            isInsideChild(cancelCircle, event.x, event.y)
++                    pressIn(when {
++                        finishingPress -> finishCircle
++                        cancelingPress -> cancelCircle
++                        bubbleMode == BubbleMode.IDLE && modeAnimator?.isRunning != true -> idleContainer
++                        else -> null
++                    })
                      true
                  }
  
-@@ -257,6 +763,7 @@ class FloatingBubbleService : Service() {
+                 MotionEvent.ACTION_MOVE -> {
+                     val dx = (event.rawX - downRawX).toInt()
                      val dy = (event.rawY - downRawY).toInt()
-                     if (!isDragging && (abs(dx) > 8 || abs(dy) > 8)) {
+-                    if (!isDragging && (abs(dx) > 8 || abs(dy) > 8)) {
++                    if (!isDragging && (abs(dx) > touchSlop || abs(dy) > touchSlop)) {
                          isDragging = true
 +                        finishingPress = false
++                        cancelingPress = false
++                        pressOut()
++                        // Finish any in-flight morph instantly so it doesn't fight the
++                        // finger for the window position.
++                        if (modeAnimator?.isRunning == true) {
++                            modeAnimator?.end()
++                            downParamsX = params?.x ?: downParamsX
++                            downParamsY = params?.y ?: downParamsY
++                            downRawX = event.rawX
++                            downRawY = event.rawY
++                        }
                      }
                      if (isDragging) {
-                         params?.x = downParamsX + dx
-@@ -267,7 +774,14 @@ class FloatingBubbleService : Service() {
+-                        params?.x = downParamsX + dx
+-                        params?.y = downParamsY + dy
++                        params?.x = downParamsX + (event.rawX - downRawX).toInt()
++                        params?.y = downParamsY + (event.rawY - downRawY).toInt()
+                         safeUpdateLayout()
+                     }
+                     true
                  }
  
                  MotionEvent.ACTION_UP -> {
 -                    if (isDragging) snapToEdge() else openHostApp()
-+                    if (finishingPress && isInsideFinishButton(view, event.x, event.y)) {
++                    pressOut()
++                    if (cancelingPress && isInsideChild(cancelCircle, event.x, event.y)) {
++                        cancelListening()
++                    } else if (finishingPress && isInsideChild(finishCircle, event.x, event.y)) {
 +                        finishListening()
 +                    } else if (isDragging) {
 +                        snapToEdge()
-+                    } else {
++                    } else if (!finishingPress && !cancelingPress) {
 +                        handleBubbleTap()
 +                    }
 +                    finishingPress = false
++                    cancelingPress = false
++                    true
++                }
++
++                MotionEvent.ACTION_CANCEL -> {
++                    pressOut()
++                    if (isDragging) snapToEdge()
++                    finishingPress = false
++                    cancelingPress = false
                      true
                  }
  
-@@ -276,6 +790,13 @@ class FloatingBubbleService : Service() {
+@@ -276,22 +1058,44 @@ class FloatingBubbleService : Service() {
          }
      }
  
-+    /** Hit-test for the finish ("\u2713") button, shown while listening. */
-+    private fun isInsideFinishButton(view: View, x: Float, y: Float): Boolean {
-+        if (view.width <= 0) return false
-+        val buttonStart = (view.width - dp2px(46)).coerceAtLeast(0)
-+        return x >= buttonStart && y >= 0f && y <= view.height.toFloat()
++    /** Hit-test against a real child view's own laid-out bounds. [child] is nested one
++     *  level inside [activeRow], which is itself a child of the view that receives touch
++     *  events (bubbleView) — so its bounds are offset by activeRow's own position. */
++    private fun isInsideChild(child: View?, x: Float, y: Float): Boolean {
++        val row = activeRow ?: return false
++        if (child == null || child.width <= 0) return false
++        val left = row.left + child.left
++        val top = row.top + child.top
++        return x >= left && x <= left + child.width && y >= top && y <= top + child.height
 +    }
 +
      // -------------------------------------------------------------------------
      // Snap animation
      // -------------------------------------------------------------------------
-@@ -283,9 +804,10 @@ class FloatingBubbleService : Service() {
-     private fun snapToEdge() {
-         val screenWidth = resources.displayMetrics.widthPixels
-         val currentX    = params?.x ?: 0
--        val bubbleWidth = dp2px(bubbleSizeDp)
-+        val bubbleWidth = params?.width ?: dp2px(bubbleSizeDp)
-         val targetX     = if (currentX + bubbleWidth / 2 < screenWidth / 2) 0
-                           else screenWidth - bubbleWidth
-+        anchoredToLeft = targetX == 0
  
-         ValueAnimator.ofInt(currentX, targetX).apply {
-             duration     = 350L
-@@ -304,22 +826,6 @@ class FloatingBubbleService : Service() {
+     private fun snapToEdge() {
+-        val screenWidth = resources.displayMetrics.widthPixels
+-        val currentX    = params?.x ?: 0
+-        val bubbleWidth = dp2px(bubbleSizeDp)
+-        val targetX     = if (currentX + bubbleWidth / 2 < screenWidth / 2) 0
+-                          else screenWidth - bubbleWidth
+-
+-        ValueAnimator.ofInt(currentX, targetX).apply {
+-            duration     = 350L
+-            interpolator = OvershootInterpolator(1.2f)
++        val screenWidth  = resources.displayMetrics.widthPixels
++        val screenHeight = resources.displayMetrics.heightPixels
++        val currentX     = params?.x ?: 0
++        val currentY     = params?.y ?: 0
++        val bubbleWidth  = params?.width ?: dp2px(bubbleSizeDp)
++        val bubbleHeight = params?.height ?: dp2px(bubbleSizeDp)
++        val targetX      = if (currentX + bubbleWidth / 2 < screenWidth / 2) 0
++                           else (screenWidth - bubbleWidth).coerceAtLeast(0)
++        // Also ease back on-screen vertically if it was dragged past the top/bottom.
++        val targetY      = currentY.coerceIn(0, (screenHeight - bubbleHeight).coerceAtLeast(0))
++        anchoredToLeft = targetX == 0
++
++        snapAnimator?.cancel()
++        snapAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
++            // The target is the screen edge, so an overshoot would only get clipped
++            // into an abrupt stop — a long decelerate glides in and settles instead.
++            duration     = 420L
++            interpolator = emphasized
+             addUpdateListener { animator ->
+-                params?.x = animator.animatedValue as Int
++                val progress = animator.animatedValue as Float
++                params?.x = lerp(currentX, targetX, progress)
++                params?.y = lerp(currentY, targetY, progress)
+                 safeUpdateLayout()
+             }
+             start()
+@@ -304,22 +1108,6 @@ class FloatingBubbleService : Service() {
          } catch (_: Exception) { /* view already removed */ }
      }
  
@@ -954,6 +1448,170 @@ index 856d4d7..d0daf7e 100644
      // -------------------------------------------------------------------------
      // Notification (required for foreground service)
      // -------------------------------------------------------------------------
+@@ -360,46 +1148,131 @@ class FloatingBubbleService : Service() {
+     // Generic helpers
+     // -------------------------------------------------------------------------
+ 
+-    /**
+-     * Builds a circular [Bitmap] filled with [color] and a subtle drop shadow.
+-     * Used as the final fallback when no other icon source is available.
+-     */
+-    private fun buildColoredCircle(sizePx: Int, color: Int): Bitmap {
+-        val bitmap = Bitmap.createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888)
+-        val canvas = Canvas(bitmap)
+-        val cx     = sizePx / 2f
+-        val cy     = sizePx / 2f
+-        val radius = sizePx / 2f - 4f
++    private fun dp2px(dp: Int): Int =
++        TypedValue.applyDimension(
++            TypedValue.COMPLEX_UNIT_DIP,
++            dp.toFloat(),
++            resources.displayMetrics
++        ).roundToInt()
++}
++
++/**
++ * Draws a row of vertical bars representing an audio waveform. Used as a static glyph
++ * (idle bubble icon, fixed bar heights), as a live amplitude-reactive visualizer while
++ * listening ([pushAmplitude] feeds it), and as a travelling "thinking" wave while the
++ * backend processes.
++ *
++ * Animated modes run a frame-synced loop (postInvalidateOnAnimation) rather than one
++ * animator per audio chunk: every frame each bar eases toward its goal with
++ * frame-rate-independent smoothing, so motion stays continuous between the ~50-100ms
++ * gaps in mic data and mode switches blend instead of cutting.
++ */
++private class WaveformView(
++    context: Context,
++    private val barCount: Int,
++    private val barColor: Int,
++) : View(context) {
++
++    enum class Mode { STATIC, LIVE, THINKING }
+ 
+-        // Drop shadow
+-        val shadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+-            this.color = Color.argb(60, 0, 0, 0)
+-            maskFilter  = BlurMaskFilter(6f, BlurMaskFilter.Blur.NORMAL)
++    private var mode = Mode.STATIC
++    private val levels = FloatArray(barCount) { 0.3f }
++    private val staticLevels = FloatArray(barCount) { 0.3f }
++    // Center bars react more than the outer ones, giving the waveform a rounded silhouette.
++    private val envelope = FloatArray(barCount) { i ->
++        0.45f + 0.55f * sin(PI.toFloat() * (i + 0.5f) / barCount)
++    }
++    // Per-bar phase offsets keep the wobble from moving all bars in lockstep.
++    private val phases = FloatArray(barCount) { i -> i * 1.7f }
++    private var targetLoudness = 0f
++    private var loudness = 0f
++    private var clockSeconds = 0f
++    private var lastFrameNanos = 0L
++
++    private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
++        style = Paint.Style.STROKE
++        strokeCap = Paint.Cap.ROUND
++        color = barColor
++    }
++
++    /** Fixed bar heights (0..1) for the static idle-icon glyph. */
++    fun setStaticLevels(vararg values: Float) {
++        values.forEachIndexed { i, v ->
++            if (i < levels.size) { levels[i] = v; staticLevels[i] = v }
+         }
+-        canvas.drawCircle(cx, cy + 3f, radius, shadowPaint)
++        setMode(Mode.STATIC)
++    }
+ 
+-        // Fill
+-        val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+-            this.color = color
++    fun setMode(next: Mode) {
++        if (next == Mode.LIVE && mode != Mode.LIVE) {
++            targetLoudness = 0f
++            loudness = 0f
+         }
+-        canvas.drawCircle(cx, cy, radius, fillPaint)
++        mode = next
++        lastFrameNanos = 0L
++        invalidate()
++    }
+ 
+-        return bitmap
++    /** Latest mic loudness (0..1); the bars ease toward it on the next frames. */
++    fun pushAmplitude(amplitude: Float) {
++        if (mode != Mode.LIVE) return
++        targetLoudness = amplitude.coerceIn(0f, 1f)
+     }
+ 
+-    private fun decodeBase64Bitmap(base64: String): Bitmap? {
+-        return try {
+-            val bytes = Base64.decode(base64, Base64.DEFAULT)
+-            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+-        } catch (_: Exception) {
+-            null
++    override fun onDraw(canvas: Canvas) {
++        super.onDraw(canvas)
++        val w = width.toFloat()
++        val h = height.toFloat()
++        if (w <= 0f || h <= 0f) return
++
++        val animating = mode != Mode.STATIC || !settledOnStatic()
++        if (animating) advance()
++
++        val spacing = w / barCount
++        val barWidthPx = (spacing * 0.45f).coerceAtLeast(2f)
++        val minBarHeight = h * 0.18f
++        paint.strokeWidth = barWidthPx
++
++        for (i in 0 until barCount) {
++            val level = levels[i].coerceIn(0f, 1f)
++            val barHeight = minBarHeight + (h * 0.82f - barWidthPx) * level
++            val cx = spacing * i + spacing / 2f
++            canvas.drawLine(cx, h / 2f - barHeight / 2f, cx, h / 2f + barHeight / 2f, paint)
+         }
++
++        if (animating && isAttachedToWindow) postInvalidateOnAnimation()
+     }
+ 
+-    private fun dp2px(dp: Int): Int =
+-        TypedValue.applyDimension(
+-            TypedValue.COMPLEX_UNIT_DIP,
+-            dp.toFloat(),
+-            resources.displayMetrics
+-        ).roundToInt()
++    private fun advance() {
++        val now = System.nanoTime()
++        val dt = if (lastFrameNanos == 0L) 1f / 60f
++                 else ((now - lastFrameNanos) / 1_000_000_000f).coerceIn(0f, 0.05f)
++        lastFrameNanos = now
++        clockSeconds += dt
++
++        // Fast attack, slower release: bars jump up with the voice and settle gently.
++        val loudnessRate = if (targetLoudness > loudness) 22f else 7f
++        loudness += (targetLoudness - loudness) * (1f - exp(-loudnessRate * dt))
++
++        val barEase = 1f - exp(-16f * dt)
++        for (i in 0 until barCount) {
++            val goal = when (mode) {
++                Mode.LIVE -> {
++                    val wobble = 0.72f + 0.28f * sin(clockSeconds * 7.5f + phases[i])
++                    // A faint idle shimmer so the pill looks alive even in silence.
++                    val shimmer = 0.05f * (0.5f + 0.5f * sin(clockSeconds * 3f + phases[i]))
++                    0.06f + shimmer + loudness * envelope[i] * wobble
++                }
++                Mode.THINKING ->
++                    0.18f + 0.42f * (0.5f + 0.5f * sin(clockSeconds * 6f - i * 0.75f))
++                Mode.STATIC -> staticLevels[i]
++            }
++            levels[i] += (goal - levels[i]) * barEase
++        }
++    }
++
++    private fun settledOnStatic(): Boolean {
++        for (i in 0 until barCount) if (abs(levels[i] - staticLevels[i]) > 0.005f) return false
++        return true
++    }
+ }
 diff --git a/node_modules/@increase21/rn-floating-bubble/android/src/main/java/com/rnfloatingbubble/MutterTextInputAccessibilityService.kt b/node_modules/@increase21/rn-floating-bubble/android/src/main/java/com/rnfloatingbubble/MutterTextInputAccessibilityService.kt
 new file mode 100644
 index 0000000..60c75f2
