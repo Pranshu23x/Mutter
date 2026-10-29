@@ -8,8 +8,10 @@
 // Uses a throwaway Supabase user that is deleted at the end.
 //
 // Usage: node scripts/voice-benchmark.mjs [latency|languages|all] [latencyRuns=3]
+//        node scripts/voice-benchmark.mjs file <audio file>   (any format ffmpeg reads;
+//        dictated once per persona, full length, at real-time pace)
 import "dotenv/config";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -131,6 +133,22 @@ async function latency(token) {
     serverLines.filter((l) => l.startsWith("[stream] setup")).forEach((l) => console.log(`    ${l}`));
 }
 
+async function fileTest(token, file) {
+    // Decode to the exact format the bubble streams: 16 kHz, 16-bit, mono PCM.
+    const pcm = execFileSync("ffmpeg", ["-v", "error", "-i", file, "-f", "s16le", "-ac", "1", "-ar", "16000", "-"], { maxBuffer: 1 << 28 });
+    console.log(`
+## ${path.basename(file)}: ${(pcm.length / 32000).toFixed(1)}s, dictated live once per persona`);
+    for (const persona of ["Work", "Email", "Personal", "Other"]) {
+        const r = await dictate(token, pcm, persona);
+        if (r.error || r.type === "error") { console.log(`
+  ${persona}: FAILED ${r.error || r.message}`); continue; }
+        console.log(`
+  ${persona} (finish -> text ${r.clientMs} ms; Sarvam ${r.timings.sttMs}, Groq ${r.timings.personaMs}; ${r.wordsSpoken} words counted)`);
+        if (persona === "Work") console.log(`    Sarvam: ${r.transcript}`);
+        console.log(`    Output: ${r.parsedOutput}`);
+    }
+}
+
 async function languages(token) {
     console.log(`\n## Multilingual: same sentence in ${SENTENCES.length} languages (Sarvam TTS bulbul:v3 -> live dictation -> English)`);
     console.log(`  Reference meaning: "Tomorrow at 10 a.m., send the report to Ravi, and call me after the meeting."`);
@@ -169,6 +187,7 @@ try {
     // A Pro row so the benchmark never trips the free daily word limit.
     await admin.from("subscription").insert({ user_id: userId, plan: "pro", status: "active" });
     await startServer();
+    if (MODE === "file") await fileTest(login.session.access_token, path.resolve(process.argv[3]));
     if (MODE === "latency" || MODE === "all") await latency(login.session.access_token);
     if (MODE === "languages" || MODE === "all") await languages(login.session.access_token);
 } catch (err) {
