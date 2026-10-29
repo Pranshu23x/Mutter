@@ -226,31 +226,29 @@ export function useFloatingBubbleController() {
   // Neither of these makes the bubble visible on its own — see activateBubble below,
   // which is only called once the whole onboarding flow is actually done. Otherwise the
   // bubble would pop up after just the overlay step, before text-input is even asked for.
+  // Each opens its Settings page and returns. The real state is re-read when the user
+  // comes back (the AppState listener below), so nothing polls or holds the button in
+  // a "waiting" state while they're away, and returning without granting makes the
+  // button usable again straight away.
   const enableOverlay = useCallback(async () => {
     if (Platform.OS !== "android") {
       return false;
     }
 
-    setIsBusy(true);
-    setPermissionState("requesting");
-    try {
-      let granted = await FloatingBubble.hasPermission();
-      if (!granted) {
-        await FloatingBubble.requestPermission();
-
-        // Android returns from Settings asynchronously; verify the real state
-        // instead of trusting the settings activity result.
-        for (let attempt = 0; attempt < 20 && !granted; attempt += 1) {
-          await wait(300);
-          granted = await FloatingBubble.hasPermission();
-        }
-      }
-
-      setPermissionState(granted ? "granted" : "denied");
-      return granted;
-    } finally {
-      setIsBusy(false);
+    if (await FloatingBubble.hasPermission()) {
+      setPermissionState("granted");
+      return true;
     }
+    setPermissionState("requesting");
+    // Resolves when the user comes back from Settings; the grant can land a moment
+    // after the app resumes, so re-check briefly before settling on the answer.
+    let granted = await FloatingBubble.requestPermission().catch(() => false);
+    for (let attempt = 0; attempt < 3 && !granted; attempt += 1) {
+      await wait(300);
+      granted = await FloatingBubble.hasPermission();
+    }
+    setPermissionState(granted ? "granted" : "denied");
+    return granted;
   }, []);
 
   const requestTextInputPermission = useCallback(async () => {
@@ -258,28 +256,22 @@ export function useFloatingBubbleController() {
       return false;
     }
 
-    setIsBusy(true);
-    try {
-      let granted = await FloatingBubble.hasTextInputPermission();
-      if (!granted) {
-        setTextInputPermissionState("requesting");
-        await FloatingBubble.requestTextInputPermission();
-
-        // Accessibility Settings is a deeper navigation (find the app in a list,
-        // toggle it, confirm a dialog, then back out) than the overlay permission —
-        // give it a much longer window, and verify the real state rather than
-        // trusting the settings activity result or leaving state stuck at "requesting".
-        for (let attempt = 0; attempt < 30 && !granted; attempt += 1) {
-          await wait(500);
-          granted = await FloatingBubble.hasTextInputPermission();
-        }
-      }
-
-      setTextInputPermissionState(granted ? "granted" : "denied");
-      return granted;
-    } finally {
-      setIsBusy(false);
+    if (await FloatingBubble.hasTextInputPermission()) {
+      setTextInputPermissionState("granted");
+      return true;
     }
+    setTextInputPermissionState("requesting");
+    await FloatingBubble.requestTextInputPermission();
+    return false;
+  }, []);
+
+  // Sideloaded installs on Android 13+ must "Allow restricted settings" in App info
+  // before the accessibility toggle works; Play Store installs never need this.
+  const [needsRestrictedUnlock, setNeedsRestrictedUnlock] = useState(false);
+  useEffect(() => {
+    FloatingBubble.needsRestrictedSettingsUnlock?.()
+      .then((value) => setNeedsRestrictedUnlock(Boolean(value)))
+      .catch(() => {});
   }, []);
 
   // Actually shows the bubble — call this once, after the whole permission sequence is
@@ -347,6 +339,7 @@ export function useFloatingBubbleController() {
     configureVoiceSession,
     isBusy,
     isShowing,
+    needsRestrictedUnlock,
     opacity,
     permissionState,
     refresh,

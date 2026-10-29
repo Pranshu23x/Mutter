@@ -4,9 +4,11 @@ import ReanimatedAnimated, { FadeIn, FadeOut } from "react-native-reanimated";
 import {
   ActivityIndicator,
   Animated,
+  AppState,
   Dimensions,
   Easing,
   ImageBackground,
+  Linking,
   Modal,
   PermissionsAndroid,
   Platform,
@@ -394,6 +396,14 @@ function AppShell() {
           buttonNegative: "Not now",
         }
       );
+      if (result === PermissionsAndroid.RESULTS.NEVER_ASK_AGAIN) {
+        // Android stops showing the prompt after it's been denied, so the button would
+        // do nothing; open Mutter's App info page instead (Permissions > Microphone).
+        // The AppState check below picks up the grant on return.
+        setMicrophonePermissionState("denied");
+        await Linking.openSettings();
+        return;
+      }
       setMicrophonePermissionState(
         result === PermissionsAndroid.RESULTS.GRANTED ? "granted" : "denied"
       );
@@ -412,14 +422,23 @@ function AppShell() {
     }
 
     let mounted = true;
-    PermissionsAndroid.check(PermissionsAndroid.PERMISSIONS.RECORD_AUDIO).then((granted) => {
-      if (mounted) {
-        setMicrophonePermissionState(granted ? "granted" : "denied");
+    const checkMicrophone = () =>
+      PermissionsAndroid.check(PermissionsAndroid.PERMISSIONS.RECORD_AUDIO).then((granted) => {
+        if (mounted) {
+          setMicrophonePermissionState(granted ? "granted" : "denied");
+        }
+      });
+    checkMicrophone();
+    // Also re-check on return from Settings (where a blocked mic gets granted).
+    const subscription = AppState.addEventListener("change", (state) => {
+      if (state === "active") {
+        checkMicrophone();
       }
     });
 
     return () => {
       mounted = false;
+      subscription.remove();
     };
   }, [loading, token]);
 
@@ -525,6 +544,7 @@ function AppShell() {
           bubblePermissionState={bubble.permissionState}
           bubbleTextInputPermissionState={bubble.textInputPermissionState}
           bubbleBusy={bubble.isBusy}
+          needsRestrictedUnlock={bubble.needsRestrictedUnlock}
           onEnableOverlay={handleEnableOverlayOnly}
           onEnableTextInput={handleEnableTextInputOnly}
           onDone={async () => {

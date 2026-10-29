@@ -1,43 +1,51 @@
 import { useEffect, useRef, useState } from "react";
 import { StatusBar } from "expo-status-bar";
-import { Animated, SafeAreaView, StyleSheet, Text, View } from "react-native";
+import { Animated, Linking, SafeAreaView, StyleSheet, Text, View } from "react-native";
 import { SoftTouchableOpacity } from "../App";
+import SettingsGuide from "./SettingsGuide";
 
-// One permission at a time, each with a short "why we need this" card, instead of the
-// old behavior of firing mic + overlay + accessibility prompts back-to-back the moment
-// a user logged in. Skipping is always available — HomeScreen's HomeBannerCard remains
-// the persistent re-entry point for anything skipped or later revoked.
+// One permission at a time: a one-line reason, a looping mini-clip of exactly what to
+// tap, and one button that jumps straight to that setting. Skipping is always
+// available; HomeScreen's HomeBannerCard remains the re-entry point for anything
+// skipped or later revoked. Each step advances by itself once its permission is
+// detected (the app re-checks whenever the user returns from Settings).
 const STEPS = [
   {
     key: "microphone",
-    title: "Hear you out",
-    body: "Mutter listens while you dictate, so it can turn your words into English.",
-    cta: "Allow microphone",
+    title: "Allow the microphone",
+    body: "So Mutter can hear what you dictate.",
+    // Android stops showing the prompt once it's been denied; the button then opens
+    // App info instead, so show that screen in the clip.
+    guide: (p, tried) => (tried && p.microphonePermissionState === "denied" ? "microphoneSettings" : "microphone"),
+    hint: (p, tried) =>
+      tried && p.microphonePermissionState === "denied"
+        ? "Tap Permissions › Microphone › Allow only while using the app."
+        : "Tap “While using the app”.",
+    cta: (p, tried) => (tried && p.microphonePermissionState === "denied" ? "Open microphone settings" : "Allow microphone"),
     isGranted: (p) => p.microphonePermissionState === "granted",
     isPending: (p) => p.microphonePermissionState === "requesting",
     onAllow: (p) => p.onEnableMicrophone(),
   },
   {
     key: "overlay",
-    title: "Dictate anywhere",
-    body: "The floating Mutter bubble lets you dictate inside any app, not just this one. Allowing this opens Android Settings — come back here once it's on.",
-    cta: "Allow overlay",
+    title: "Show the bubble",
+    body: "Lets the Mutter bubble float over your other apps.",
+    guide: () => "overlay",
+    hint: () => "Find Mutter in the list and switch it on, then come back.",
+    cta: () => "Open settings",
     isGranted: (p) => p.bubblePermissionState === "granted",
-    isPending: (p) => p.bubbleBusy || p.bubblePermissionState === "requesting",
+    isPending: () => false,
     onAllow: (p) => p.onEnableOverlay(),
   },
   {
     key: "textInput",
-    title: "Type it in for you",
-    body: "Accessibility access can expose the active app and editable field. Mutter uses it only to find that field and insert your completed dictation; it never sends messages or takes actions by itself.",
-    instructions: [
-      "In Accessibility settings, open Downloaded apps.",
-      "Choose Mutter and turn on Allow Mutter to control your device.",
-      "Leave the Mutter shortcut turned off. You can turn this access off anytime in Settings.",
-    ],
-    cta: "Open Accessibility settings",
+    title: "Type for you",
+    body: "Mutter only uses this to put your dictated text into the box you're typing in.",
+    guide: () => "accessibility",
+    hint: () => "Open Downloaded apps (or Installed apps) › Mutter, switch on Use Mutter, tap Allow.",
+    cta: () => "Open settings",
     isGranted: (p) => p.bubbleTextInputPermissionState === "granted",
-    isPending: (p) => p.bubbleBusy || p.bubbleTextInputPermissionState === "requesting",
+    isPending: () => false,
     onAllow: (p) => p.onEnableTextInput(),
   },
 ];
@@ -45,64 +53,44 @@ const STEPS = [
 export default function PermissionOnboardingScreen(props) {
   const [stepIndex, setStepIndex] = useState(0);
   const [displayedIndex, setDisplayedIndex] = useState(0);
+  const [triedSteps, setTriedSteps] = useState({});
+  const [showUnlock, setShowUnlock] = useState(false);
   const step = STEPS[displayedIndex];
+  const tried = Boolean(triedSteps[step.key]);
   const granted = step.isGranted(props);
   const pending = step.isPending(props);
   const isLastStep = displayedIndex === STEPS.length - 1;
+  // Sideloaded installs on Android 13+ show "Restricted setting" on the accessibility
+  // toggle until it's unlocked in App info; offer that once they've tried it.
+  const canUnlock = step.key === "textInput" && props.needsRestrictedUnlock && tried && !granted;
+  const guide = showUnlock && canUnlock ? "restricted" : step.guide(props, tried);
 
   const cardOpacity = useRef(new Animated.Value(0)).current;
-  const cardTranslate = useRef(new Animated.Value(14)).current;
-  const cardScale = useRef(new Animated.Value(0.94)).current;
+  const cardTranslate = useRef(new Animated.Value(10)).current;
 
   const playEntrance = () => {
-    cardTranslate.setValue(14);
-    cardScale.setValue(0.94);
+    cardTranslate.setValue(10);
     Animated.parallel([
-      Animated.timing(cardOpacity, {
-        toValue: 1,
-        duration: 280,
-        useNativeDriver: true,
-      }),
-      Animated.spring(cardTranslate, {
-        toValue: 0,
-        friction: 8,
-        tension: 60,
-        useNativeDriver: true,
-      }),
-      Animated.spring(cardScale, {
-        toValue: 1,
-        friction: 8,
-        tension: 60,
-        useNativeDriver: true,
-      }),
+      Animated.timing(cardOpacity, { toValue: 1, duration: 240, useNativeDriver: true }),
+      Animated.spring(cardTranslate, { toValue: 0, friction: 9, tension: 70, useNativeDriver: true }),
     ]).start();
   };
 
-  // Mount entrance.
   useEffect(() => {
     playEntrance();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Crossfade + slide/scale out the old card, then in with the new one, instead of
-  // an abrupt content swap.
   useEffect(() => {
     if (stepIndex === displayedIndex) {
       return undefined;
     }
     Animated.parallel([
-      Animated.timing(cardOpacity, {
-        toValue: 0,
-        duration: 160,
-        useNativeDriver: true,
-      }),
-      Animated.timing(cardTranslate, {
-        toValue: -14,
-        duration: 160,
-        useNativeDriver: true,
-      }),
+      Animated.timing(cardOpacity, { toValue: 0, duration: 140, useNativeDriver: true }),
+      Animated.timing(cardTranslate, { toValue: -10, duration: 140, useNativeDriver: true }),
     ]).start(() => {
       setDisplayedIndex(stepIndex);
+      setShowUnlock(false);
       playEntrance();
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -112,24 +100,33 @@ export default function PermissionOnboardingScreen(props) {
     if (!granted) {
       return undefined;
     }
-    const timer = setTimeout(() => {
-      if (isLastStep) {
-        props.onDone();
-      } else {
-        setStepIndex((i) => i + 1);
-      }
-    }, 500);
+    const timer = setTimeout(advance, 450);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [granted, isLastStep]);
 
-  const advance = () => {
+  function advance() {
     if (isLastStep) {
       props.onDone();
     } else {
       setStepIndex((i) => i + 1);
     }
+  }
+
+  const allow = () => {
+    setTriedSteps((current) => ({ ...current, [step.key]: true }));
+    setShowUnlock(false);
+    step.onAllow(props);
   };
+
+  const unlock = () => {
+    setShowUnlock(true);
+    Linking.openSettings().catch(() => {});
+  };
+
+  const hint = showUnlock && canUnlock
+    ? "Tap ⋮ (top right) › Allow restricted settings, then come back and tap Open settings again."
+    : step.hint(props, tried);
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -137,45 +134,38 @@ export default function PermissionOnboardingScreen(props) {
       <View style={styles.screen}>
         <View style={styles.dots}>
           {STEPS.map((s, index) => (
-            <View
-              key={s.key}
-              style={[styles.dot, index === displayedIndex && styles.dotActive]}
-            />
+            <View key={s.key} style={[styles.dot, index === displayedIndex && styles.dotActive]} />
           ))}
         </View>
 
         <View style={styles.centerWrap}>
           <Animated.View
-            style={[
-              styles.card,
-              {
-                opacity: cardOpacity,
-                transform: [{ translateY: cardTranslate }, { scale: cardScale }],
-              },
-            ]}
+            style={[styles.card, { opacity: cardOpacity, transform: [{ translateY: cardTranslate }] }]}
           >
+            <Text style={styles.step}>Step {displayedIndex + 1} of {STEPS.length}</Text>
             <Text style={styles.title}>{step.title}</Text>
             <Text style={styles.description}>{step.body}</Text>
-            {step.instructions && (
-              <View style={styles.instructions}>
-                {step.instructions.map((instruction, index) => (
-                  <View key={instruction} style={styles.instructionRow}>
-                    <Text style={styles.instructionNumber}>{index + 1}.</Text>
-                    <Text style={styles.instructionText}>{instruction}</Text>
-                  </View>
-                ))}
-              </View>
-            )}
+
+            <View style={styles.guide}>
+              <SettingsGuide guide={guide} />
+            </View>
+            <Text style={styles.hint}>{hint}</Text>
 
             <SoftTouchableOpacity
-              onPress={() => step.onAllow(props)}
+              onPress={allow}
               disabled={pending || granted}
               style={[styles.primaryButton, (pending || granted) && styles.primaryButtonBusy]}
             >
               <Text style={styles.primaryButtonText}>
-                {granted ? "Allowed" : pending ? "Waiting for you..." : step.cta}
+                {granted ? "Allowed ✓" : pending ? "Waiting…" : step.cta(props, tried)}
               </Text>
             </SoftTouchableOpacity>
+
+            {canUnlock && !showUnlock && (
+              <SoftTouchableOpacity onPress={unlock} style={styles.linkButton}>
+                <Text style={styles.linkButtonText}>Toggle greyed out or “Restricted setting”? Unlock it</Text>
+              </SoftTouchableOpacity>
+            )}
 
             <SoftTouchableOpacity onPress={advance} style={styles.skipButton}>
               <Text style={styles.skipButtonText}>Skip for now</Text>
@@ -194,23 +184,24 @@ const styles = StyleSheet.create({
   },
   screen: {
     flex: 1,
-    paddingHorizontal: 28,
-    paddingTop: 20,
-    paddingBottom: 24,
+    paddingHorizontal: 24,
+    paddingTop: 16,
+    paddingBottom: 20,
   },
   dots: {
     flexDirection: "row",
     justifyContent: "center",
-    marginTop: 12,
+    marginTop: 8,
   },
   dot: {
-    width: 10,
-    height: 10,
-    marginHorizontal: 6,
-    borderRadius: 5,
+    width: 6,
+    height: 6,
+    marginHorizontal: 4,
+    borderRadius: 3,
     backgroundColor: "rgba(255, 255, 255, 0.35)",
   },
   dotActive: {
+    width: 18,
     backgroundColor: "#ffffff",
   },
   centerWrap: {
@@ -219,66 +210,74 @@ const styles = StyleSheet.create({
   },
   card: {
     alignItems: "center",
+    alignSelf: "center",
+    width: "100%",
+    maxWidth: 360,
+  },
+  step: {
+    fontSize: 12,
+    letterSpacing: 0.4,
+    color: "rgba(255, 255, 255, 0.6)",
   },
   title: {
-    fontSize: 28,
-    lineHeight: 34,
+    marginTop: 6,
+    fontSize: 22,
+    lineHeight: 28,
     fontWeight: "700",
     color: "#ffffff",
     textAlign: "center",
   },
   description: {
-    marginTop: 14,
-    fontSize: 15,
-    lineHeight: 22,
-    color: "rgba(255, 255, 255, 0.85)",
+    marginTop: 6,
+    fontSize: 14,
+    lineHeight: 20,
+    color: "rgba(255, 255, 255, 0.8)",
     textAlign: "center",
   },
-  instructions: {
+  guide: {
     alignSelf: "stretch",
-    marginTop: 20,
-    gap: 12,
+    marginTop: 18,
   },
-  instructionRow: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-  },
-  instructionNumber: {
-    width: 24,
-    fontSize: 15,
-    lineHeight: 22,
-    fontWeight: "700",
-    color: "#ffffff",
-  },
-  instructionText: {
-    flex: 1,
-    fontSize: 15,
-    lineHeight: 22,
-    color: "rgba(255, 255, 255, 0.85)",
+  hint: {
+    marginTop: 10,
+    fontSize: 13,
+    lineHeight: 18,
+    color: "rgba(255, 255, 255, 0.75)",
+    textAlign: "center",
   },
   primaryButton: {
     width: "100%",
-    minHeight: 56,
+    minHeight: 48,
     borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "#ffffff",
-    marginTop: 24,
+    marginTop: 18,
   },
   primaryButtonBusy: {
     opacity: 0.75,
   },
   primaryButtonText: {
-    fontSize: 17,
+    fontSize: 16,
     fontWeight: "700",
     color: "#111111",
   },
+  linkButton: {
+    marginTop: 12,
+    paddingVertical: 4,
+  },
+  linkButtonText: {
+    fontSize: 13,
+    color: "#ffffff",
+    textDecorationLine: "underline",
+    textAlign: "center",
+  },
   skipButton: {
-    marginTop: 16,
+    marginTop: 10,
     paddingVertical: 8,
   },
   skipButtonText: {
-    fontSize: 14,
-    color: "rgba(255, 255, 255, 0.75)",
+    fontSize: 13,
+    color: "rgba(255, 255, 255, 0.7)",
   },
 });
