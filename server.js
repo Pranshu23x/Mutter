@@ -35,6 +35,11 @@ app.use((req, res, next) => {
 app.get('/healthz', (req, res) => res.json({ status: "ok" }));
 
 app.get('/', (req, res) => res.redirect('/test.html'));
+// Public policy URLs for the Play listing. Set SUPPORT_EMAIL to a monitored address
+// before deployment; the deletion route remains usable after a user uninstalls the app.
+const supportEmail = process.env.SUPPORT_EMAIL || "support@example.com";
+app.get("/account-deletion", (req, res) => res.type("html").send(`<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"><title>Delete your Mutter account</title></head><body><main><h1>Delete your Mutter account</h1><p>To request deletion of your Mutter account and associated transcripts, recordings, and subscription data, email <a href="mailto:${supportEmail}?subject=Mutter%20account%20deletion%20request">${supportEmail}</a> from the email address on your account. We may ask you to verify ownership before completing the request.</p><p>You can also delete your account immediately in the Mutter app: Profile → Account → Delete account.</p></main></body></html>`));
+app.get("/privacy", (req, res) => res.type("html").send(`<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"><title>Mutter Privacy Policy</title></head><body><main><h1>Mutter Privacy Policy</h1><p>Mutter processes account email, microphone audio submitted for dictation, generated transcripts and translations, usage counts, and subscription status to provide dictation and account features. Audio and transcripts are stored only for the features you enable and are not used to train AI models.</p><p>Mutter shares data with its service providers solely to operate the service, including authentication, storage, speech processing, and payment providers. We do not sell personal data.</p><p>You can delete individual transcripts in the app and delete your account and associated data in Profile → Account → Delete account, or via <a href="/account-deletion">our deletion-request page</a>.</p><p>For privacy questions, contact <a href="mailto:${supportEmail}">${supportEmail}</a>.</p></main></body></html>`));
 app.use(express.static('public'));
 app.use('/api/auth' , authRoutes);
 app.use('/api' , arcjetProtection, speechRoutes);

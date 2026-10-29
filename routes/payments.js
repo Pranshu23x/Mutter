@@ -27,7 +27,14 @@ router.post("/create-subs" , authenticate, async(req,res)=>{
         // forever with "you already have a subscription".
         const ABANDONED_AFTER_MS = 30 * 60 * 1000;
         if (existing && existing.status === "created") {
-            const ageMs = Date.now() - new Date(existing.created_at).getTime();
+            // created_at is a timestamp WITHOUT time zone (e.g. "2026-10-29T10:11:55"),
+            // stored in UTC. new Date() would read it as the machine's local time — on an
+            // IST machine a fresh checkout then looks 5.5h old and gets "abandoned" — so
+            // mark it UTC explicitly unless it already carries an offset.
+            const createdAt = /[zZ]|[+-]\d\d:?\d\d$/.test(existing.created_at)
+                ? existing.created_at
+                : `${existing.created_at}Z`;
+            const ageMs = Date.now() - new Date(createdAt).getTime();
             if (ageMs > ABANDONED_AFTER_MS) {
                 await updateSubsStatus(existing.razorpay_subscription_id, "cancelled");
                 existing = null;

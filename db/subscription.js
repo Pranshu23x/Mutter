@@ -30,12 +30,16 @@ export async function getActiveSubs(user_Id){
 }
 
 export async function getbyRazID(razorpay_Subscription_Id) {
-    const {data}= await supabase
+    const {data, error}= await supabase
                   .from('subscription')
                   .select('*')
                   .eq('razorpay_subscription_id', razorpay_Subscription_Id)
                   .maybeSingle();
 
+    // Must throw, not return null: the webhook treats null as "not our subscription"
+    // and answers 200, so a DB outage would make Razorpay drop a real payment event
+    // instead of retrying it.
+    if(error) throw error;
     return data;
 }
 
@@ -57,9 +61,9 @@ export async function updateSubsStatus(razorpay_Subscription_Id , status, curren
     }
     if(currentStart) update.current_period_start=currentStart;
     if(currentEnd) update.current_period_end= currentEnd;
-    if(status==='cancelled' || status==="completed" || status=='halted'){
-        update.ended_at= new Date().toISOString();
-    }
+    // No ended_at here: the subscription table has no such column, so writing it made
+    // every cancelled/completed/halted webhook fail and users kept Pro. updated_at
+    // already records when a subscription reached its final status.
     const {data, error}= await supabase
                          .from('subscription')
                          .update(update)

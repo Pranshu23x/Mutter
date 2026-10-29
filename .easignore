@@ -1,0 +1,28 @@
+# EAS Build archives the whole git repository (this folder), not just mobile/, so its
+# ignore file must live here. Only mobile/ is needed to build the app: everything else
+# (backend code, its .env with server secrets, test audio) stays off Expo's servers.
+/*
+!/mobile
+
+# Reinstalled / regenerated on the build server.
+/mobile/node_modules
+/mobile/android
+/mobile/ios
+/mobile/.expo
+/mobile/dist
+/mobile/web-build
+/mobile/.idea
+
+# Local builds and the release signing key — never upload.
+/mobile/debug-builds
+/mobile/release-builds
+*.apk
+*.aab
+*.keystore
+*.jks
+*.p12
+*.log
+
+# mobile/.env is deliberately NOT ignored: its EXPO_PUBLIC_* values (API URL, Supabase
+# URL + anon key) are public client config that must be baked into the build. Keep
+# only EXPO_PUBLIC_* values in it.
