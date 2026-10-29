@@ -63,6 +63,7 @@ function persistInBackground({ userId, transcript, parsedOutput, personaChoice, 
 }
 
 export async function handleStreamConnection(ws, req) {
+    const tConnect = Date.now();
     const pcmChunks = [];
     let stopped = false; // true once we've committed to either "stop" or "cancel" — guards against double-handling
     let session = null;
@@ -99,13 +100,21 @@ export async function handleStreamConnection(ws, req) {
         if (msg.type === "stop") {
             stopped = true;
             try {
+                // Per-stage timings from the user's tap on "finish" — what they actually wait for.
+                const tStop = Date.now();
                 const { transcript } = await session.stop();
+                const tTranscript = Date.now();
                 const wordsSpoken = transcript.trim().split(/\s+/).filter(w => w.length > 0).length;
                 const parsedOutput = wordsSpoken < 3 ? transcript : await persona(transcript, personaChoice);
+                const tPersona = Date.now();
+                const timings = {
+                    sttMs: tTranscript - tStop,
+                    personaMs: tPersona - tTranscript,
+                    totalMs: tPersona - tStop,
+                };
 
-                // synchronous, same as the HTTP route — avoids a word-limit race on rapid consecutive sessions
-                await updateTodayUsage(user.id, wordsSpoken);
-
+                // Text goes to the user first: the usage write is two Supabase round trips
+                // (~1s from India) and used to sit between "finish" and the text appearing.
                 send(ws, {
                     type: "result",
                     transcript,
@@ -113,7 +122,19 @@ export async function handleStreamConnection(ws, req) {
                     wordsSpoken,
                     wordsUsedToday: usage + wordsSpoken,
                     persona: personaChoice,
+                    timings,
                 });
+
+                // Still awaited before closing, so a new session (which needs another tap,
+                // plus the bubble's ~1s "Done" collapse) almost always sees the updated
+                // count for its word-limit check.
+                const tUsage = Date.now();
+                try {
+                    await updateTodayUsage(user.id, wordsSpoken);
+                } catch (usageErr) {
+                    console.error("Usage update failed:", usageErr.message);
+                }
+                console.log(`[stream] stop->result ${timings.totalMs}ms (stt ${timings.sttMs}, persona ${timings.personaMs}); usage write after send ${Date.now() - tUsage}ms`);
                 ws.close(1000, "done");
 
                 persistInBackground({ userId: user.id, transcript, parsedOutput, personaChoice, pcmChunks });
@@ -166,8 +187,11 @@ export async function handleStreamConnection(ws, req) {
         return;
     }
 
+    const stages = {};
+    let tStage = Date.now();
     try {
         user = await authenticateToken(authHeader.split(" ")[1]);
+        stages.authMs = Date.now() - tStage;
     } catch (err) {
         ws.close(4401, err.message || "Unauthorized");
         return;
@@ -178,28 +202,50 @@ export async function handleStreamConnection(ws, req) {
     const requestedPersona = url.searchParams.get("persona") || "Work";
     personaChoice = VALID_PERSONA.includes(requestedPersona) ? requestedPersona : "Work";
 
-    usage = await getTodayUsage(user.id);
+    // The usage check (a Supabase round trip) and the Sarvam connect don't depend on each
+    // other, so run them in parallel rather than back to back. Both start only after
+    // auth, so unauthenticated sockets never open a Sarvam connection.
+    tStage = Date.now();
+    const usagePromise = getTodayUsage(user.id).then((value) => {
+        stages.usageMs = Date.now() - tStage;
+        return value;
+    });
+    const sessionPromise = createStreamingSession({ apiKey: sarvamKeys.currentKey() }).then((value) => {
+        stages.sarvamMs = Date.now() - tStage;
+        return value;
+    });
+    const [usageResult, sessionResult] = await Promise.allSettled([usagePromise, sessionPromise]);
+    const discardSession = () => {
+        if (sessionResult.status === "fulfilled") sessionResult.value.cancel();
+    };
+
+    if (usageResult.status === "rejected") {
+        discardSession();
+        send(ws, { type: "error", message: "Could not check your usage" });
+        ws.close(1011, "usage check failed");
+        return;
+    }
+    usage = usageResult.value;
     const limits = getPlanLimits(user.plan);
     if (usage >= limits.wordsPerDay) {
+        discardSession();
         send(ws, { type: "error", code: "LIMIT_EXCEEDED", message: "Daily limit exceeded", usage, limit: limits.wordsPerDay });
         ws.close(4429, "Daily limit exceeded");
         return;
     }
-    if (bailIfCancelled() || ws.readyState !== ws.OPEN) return;
-
-    try {
-        session = await createStreamingSession({ apiKey: sarvamKeys.currentKey() });
-    } catch (err) {
+    if (sessionResult.status === "rejected") {
         send(ws, { type: "error", message: "Translation service unavailable" });
         ws.close(1011, "Sarvam connect failed");
         return;
     }
+    session = sessionResult.value;
     if (bailIfCancelled() || ws.readyState !== ws.OPEN) {
         session.cancel();
         return;
     }
 
     ready = true;
+    console.log(`[stream] setup ${Date.now() - tConnect}ms (auth ${stages.authMs}, usage check ${stages.usageMs}, Sarvam connect ${stages.sarvamMs}; audio is buffered meanwhile)`);
     const toReplay = buffered.splice(0);
     for (const { data, isBinary } of toReplay) {
         await handleMessage(data, isBinary);

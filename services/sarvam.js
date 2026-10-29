@@ -99,7 +99,7 @@ function transcribeViaWebSocket(buffer, model, apiKey) {
 // already have a segment when stop() is called, only a short grace window is
 // needed (to catch a rare trailing segment) — the long batch-mode margin is
 // reserved for the rare case where nothing has arrived yet.
-const STOP_GRACE_MS = 500; // safety margin over the ~90ms worst-case flush-to-data observed once a segment already exists
+const STOP_GRACE_MS = 300; // ~3x the ~90ms worst-case flush-to-data observed once a segment already exists (was 500; trimmed for latency)
 export async function createStreamingSession({ apiKey, model = "saaras:v3" }) {
     const client = clientFor(apiKey);
     const socket = await client.speechToTextTranslateStreaming.connect({

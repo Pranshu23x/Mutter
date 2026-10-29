@@ -5,11 +5,19 @@ import { KeyRotator } from "../utils/apiKeyRotator.js";
 config();
 
 const groqKeys = new KeyRotator("Groq", "GROQ");
+// Overridable so models can be compared (scripts/test-persona.mjs) without code edits.
+const PERSONA_MODEL = process.env.PERSONA_MODEL || "openai/gpt-oss-20b";
+const PERSONA_REASONING = process.env.PERSONA_REASONING || "low";
 const groqClients = new Map();
 
 function clientFor(apiKey) {
     if (!groqClients.has(apiKey)) {
-        groqClients.set(apiKey, new Groq({ apiKey }));
+        // Each Groq key has its own rate limit (verified). The SDK's built-in retries
+        // (2, honouring retry-after) made a rate-limited dictation wait 6-12s on the
+        // SAME key before groqKeys.run() could rotate; with spare keys, fail fast and
+        // let the rotator move to a fresh key instantly. With one key, keep retries.
+        const maxRetries = groqKeys.keys.length > 1 ? 0 : 2;
+        groqClients.set(apiKey, new Groq({ apiKey, maxRetries }));
     }
     return groqClients.get(apiKey);
 }
@@ -151,7 +159,7 @@ export async function persona(text, style = "Work") {
             { role: "system", content: fullPrompt },
             { role: "user", content: wrapTranscript(masked) },
         ],
-        model: "openai/gpt-oss-20b",
+        model: PERSONA_MODEL,
         temperature: 0.3,
         max_completion_tokens: 2048,
         top_p: 1,
@@ -160,7 +168,7 @@ export async function persona(text, style = "Work") {
         // frequently burns its entire token budget on internal reasoning before reaching
         // an answer (2/3 runs failed empty in testing, reasoning_tokens hit the 2048 cap).
         // Low reasoning effort was 3/3 reliable and meaningfully faster.
-        reasoning_effort: "low",
+        reasoning_effort: PERSONA_REASONING,
         stop: null,
     }));
 
